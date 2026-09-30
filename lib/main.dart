@@ -262,9 +262,6 @@ class EmbeddedSimulator {
   }
 }
 
-// =========================================================
-// THEME HELPER (dibuat sekali per palette, bukan tiap rebuild)
-// =========================================================
 ThemeData _buildTheme(AppPalette p) {
   final base = AppTheme.from(p);
   return base.copyWith(textTheme: GoogleFonts.interTextTheme(base.textTheme));

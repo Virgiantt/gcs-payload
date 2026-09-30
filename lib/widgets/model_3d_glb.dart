@@ -7,12 +7,6 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import '../models/telemetry.dart';
 import '../theme/app_theme.dart';
 
-/// Viewer 3D untuk payload.glb.
-///
-/// - Model dilayani lewat server HTTP lokal (127.0.0.1) supaya tidak kena
-///   batas ukuran HTML WebView2 (~2 MB).
-/// - Hanya SATU WebView, dibuat sekali. Rotasi dikirim lewat JavaScript.
-/// - AutomaticKeepAlive: WebView tidak di-dispose saat pindah tab.
 class Model3DGlbView extends StatefulWidget {
   final AppPalette palette;
   final Telemetry? data;
