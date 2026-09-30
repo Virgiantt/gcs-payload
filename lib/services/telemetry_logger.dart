@@ -4,9 +4,6 @@ import 'package:flutter/foundation.dart';
 
 import '../models/telemetry.dart';
 
-/// Menyimpan SEMUA paket telemetri ke file CSV (satu file per sesi).
-/// Lokasi: <Documents>/CanSat_GCS_Logs/telemetry_YYYYMMDD_HHMMSS.csv
-/// Setiap baris langsung di-flush ke disk, jadi aman kalau aplikasi crash.
 class TelemetryLogger {
   static const String header =
       'RX_TIME,TEAM_ID,MISSION_TIME,PACKET_COUNT,ALTITUDE,PRESSURE,'
