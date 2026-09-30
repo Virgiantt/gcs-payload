@@ -677,7 +677,9 @@ class _GcsHomeState extends State<GcsHome> {
   }
 
   // =========================================================
-  // TAB 1: DASHBOARD — 3 tabel log real-time
+  // TAB 1: DASHBOARD
+  //   Baris atas : Flight State (kiri) + Command Center (kanan)
+  //   Baris bawah: Telemetry table selebar layar
   // =========================================================
   Widget _buildDashboardTab() {
     final t = service.latest;
@@ -688,28 +690,33 @@ class _GcsHomeState extends State<GcsHome> {
       children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-          child: _buildHeroStatus(t),
+          child: SizedBox(
+            height: 248,
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Expanded(flex: 4, child: _buildHeroStatus(t)),
+                const SizedBox(width: 12),
+                Expanded(
+                  flex: 6,
+                  child: CommandPanel(
+                    palette: palette,
+                    service: cmd,
+                    compact: true,
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
         const SizedBox(height: 12),
         Expanded(
           child: Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Expanded(
-                  child: TelemetryLogTable(
-                    palette: palette,
-                    history: history,
-                    maxRows: 10,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                SizedBox(
-                  width: 330,
-                  child: CommandPanel(palette: palette, service: cmd),
-                ),
-              ],
+            child: TelemetryLogTable(
+              palette: palette,
+              history: history,
+              maxRows: 10,
             ),
           ),
         ),
@@ -739,6 +746,53 @@ class _GcsHomeState extends State<GcsHome> {
         stateColor = palette.textDim;
     }
 
+    Widget stat(String label, String value, {String? unit}) {
+      return Expanded(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              label,
+              style: TextStyle(
+                color: palette.textDim,
+                fontSize: 10,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 1.6,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.baseline,
+              textBaseline: TextBaseline.alphabetic,
+              children: [
+                Text(
+                  value,
+                  style: TextStyle(
+                    color: palette.text,
+                    fontSize: 24,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                if (unit != null) ...[
+                  const SizedBox(width: 4),
+                  Text(
+                    unit,
+                    style: TextStyle(
+                      color: palette.textDim,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ],
+        ),
+      );
+    }
+
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
@@ -753,93 +807,69 @@ class _GcsHomeState extends State<GcsHome> {
         border: Border.all(color: stateColor.withOpacity(0.4), width: 1.5),
         borderRadius: BorderRadius.circular(14),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Container(
-            width: 56,
-            height: 56,
-            decoration: BoxDecoration(
-              color: stateColor.withOpacity(0.2),
-              shape: BoxShape.circle,
-            ),
-            child: Icon(
-              _stateIcon(t?.state),
-              color: stateColor,
-              size: 30,
-            ),
-          ),
-          const SizedBox(width: 18),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'FLIGHT STATE',
-                  style: TextStyle(
-                    color: palette.textDim,
-                    fontSize: 10,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: 1.6,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  t?.state ?? 'WAITING',
-                  style: TextStyle(
-                    color: stateColor,
-                    fontSize: 26,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: 1.5,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
+          // Baris atas: ikon + flight state
+          Row(
             children: [
-              Text(
-                'ALTITUDE',
-                style: TextStyle(
-                  color: palette.textDim,
-                  fontSize: 10,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 1.6,
+              Container(
+                width: 56,
+                height: 56,
+                decoration: BoxDecoration(
+                  color: stateColor.withOpacity(0.2),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(_stateIcon(t?.state), color: stateColor, size: 30),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      'FLIGHT STATE',
+                      style: TextStyle(
+                        color: palette.textDim,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 1.6,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    FittedBox(
+                      fit: BoxFit.scaleDown,
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        t?.state ?? 'WAITING',
+                        style: TextStyle(
+                          color: stateColor,
+                          fontSize: 28,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 1.5,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
-              const SizedBox(height: 4),
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.baseline,
-                textBaseline: TextBaseline.alphabetic,
-                children: [
-                  Text(
-                    t == null ? '—' : t.altitude.toStringAsFixed(1),
-                    style: TextStyle(
-                      color: palette.text,
-                      fontSize: 30,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                  const SizedBox(width: 4),
-                  Text(
-                    'm',
-                    style: TextStyle(
-                      color: palette.textDim,
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 2),
-              Text(
-                'Time ${t?.missionTime ?? '--:--:--'}',
-                style: TextStyle(
-                  color: palette.textDim,
-                  fontSize: 11,
-                  fontFamily: 'monospace',
-                ),
-              ),
+            ],
+          ),
+          Divider(height: 1, color: stateColor.withOpacity(0.25)),
+          // Baris bawah: statistik sejajar rata kiri
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              stat('ALTITUDE', t == null ? '—' : t.altitude.toStringAsFixed(1),
+                  unit: 'm'),
+              stat('MISSION TIME', t?.missionTime ?? '--:--:--'),
+              stat(
+                  'PACKET',
+                  t == null
+                      ? '—'
+                      : '#${t.packetCount.toString().padLeft(4, '0')}'),
             ],
           ),
         ],
