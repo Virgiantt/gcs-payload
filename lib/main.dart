@@ -12,6 +12,7 @@ import 'package:window_manager/window_manager.dart';
 import 'models/telemetry.dart';
 import 'services/alert_service.dart';
 import 'services/command_service.dart';
+import 'services/health_service.dart';
 import 'services/system_monitor.dart';
 import 'services/telemetry_logger.dart';
 import 'services/telemetry_service.dart';
@@ -21,6 +22,8 @@ import 'widgets/camera_view.dart';
 import 'widgets/command_panel.dart';
 import 'widgets/connection_indicator.dart';
 import 'widgets/gps_panel.dart';
+import 'widgets/health_panel.dart';
+import 'widgets/health_strip.dart';
 import 'widgets/live_chart.dart';
 import 'widgets/map_view.dart';
 import 'widgets/model_3d_glb.dart';
@@ -332,6 +335,8 @@ class _GcsHomeState extends State<GcsHome> {
   final SystemMonitor sysmon = SystemMonitor();
   final TelemetryLogger logger = TelemetryLogger();
   final AlertService alerts = AlertService();
+  late final HealthService health =
+      HealthService(inputs: _healthInputs, cmd: cmd);
   Timer? _alertTimer;
   int _lastTotal = -1;
   DateTime? _lastPacketAt;
@@ -390,7 +395,15 @@ class _GcsHomeState extends State<GcsHome> {
     if (mounted) setState(() {});
   }
 
+  HealthInputs _healthInputs() => HealthInputs(
+        latest: service.latest,
+        history: service.history,
+        lastPacketAt: _lastPacketAt,
+        linkUp: service.status == ConnectionStatus.connected,
+      );
+
   void _runAlerts() {
+    health.refresh();
     alerts.update(
       latest: service.latest,
       history: service.history,
@@ -404,6 +417,7 @@ class _GcsHomeState extends State<GcsHome> {
   @override
   void dispose() {
     _alertTimer?.cancel();
+    health.dispose();
     service.removeListener(_onServiceUpdate);
     service.dispose();
     simulator.stop();
@@ -656,7 +670,7 @@ class _GcsHomeState extends State<GcsHome> {
   // =========================================================
   Widget _buildTabView() {
     return DefaultTabController(
-      length: 4,
+      length: 5,
       child: Container(
         margin: const EdgeInsets.all(14),
         decoration: BoxDecoration(
@@ -674,6 +688,11 @@ class _GcsHomeState extends State<GcsHome> {
                 Tab(
                   icon: Icon(Icons.dashboard_outlined, size: 16),
                   text: 'Dashboard',
+                  iconMargin: EdgeInsets.only(bottom: 2),
+                ),
+                Tab(
+                  icon: Icon(Icons.health_and_safety_outlined, size: 16),
+                  text: 'Payload Health',
                   iconMargin: EdgeInsets.only(bottom: 2),
                 ),
                 Tab(
@@ -698,6 +717,7 @@ class _GcsHomeState extends State<GcsHome> {
                 physics: const NeverScrollableScrollPhysics(),
                 children: [
                   _buildDashboardTab(),
+                  _buildHealthTab(),
                   _buildMapCameraTab(),
                   _build3DTab(),
                   _buildChartsTab(),
@@ -845,51 +865,75 @@ class _GcsHomeState extends State<GcsHome> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          // Baris atas: ikon + flight state
-          Row(
-            children: [
-              Container(
-                width: 56,
-                height: 56,
-                decoration: BoxDecoration(
-                  color: stateColor.withOpacity(0.2),
-                  shape: BoxShape.circle,
-                ),
-                child: Icon(_stateIcon(t?.state), color: stateColor, size: 30),
-              ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      'FLIGHT STATE',
-                      style: TextStyle(
-                        color: palette.textDim,
-                        fontSize: 10,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 1.6,
-                      ),
+          // Baris atas: ikon + flight state + ringkasan Payload Health
+          LayoutBuilder(
+            builder: (context, c) {
+              final showStrip = c.maxWidth > 520;
+              return Row(
+                children: [
+                  Container(
+                    width: 56,
+                    height: 56,
+                    decoration: BoxDecoration(
+                      color: stateColor.withOpacity(0.2),
+                      shape: BoxShape.circle,
                     ),
-                    const SizedBox(height: 4),
-                    FittedBox(
-                      fit: BoxFit.scaleDown,
-                      alignment: Alignment.centerLeft,
-                      child: Text(
-                        t?.state ?? 'WAITING',
-                        style: TextStyle(
-                          color: stateColor,
-                          fontSize: 28,
-                          fontWeight: FontWeight.w800,
-                          letterSpacing: 1.5,
+                    child:
+                        Icon(_stateIcon(t?.state), color: stateColor, size: 30),
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    flex: 4,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          'FLIGHT STATE',
+                          style: TextStyle(
+                            color: palette.textDim,
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 1.6,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        FittedBox(
+                          fit: BoxFit.scaleDown,
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            t?.state ?? 'WAITING',
+                            style: TextStyle(
+                              color: stateColor,
+                              fontSize: 28,
+                              fontWeight: FontWeight.w800,
+                              letterSpacing: 1.5,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (showStrip) ...[
+                    const SizedBox(width: 12),
+                    Expanded(
+                      flex: 5,
+                      child: Align(
+                        alignment: Alignment.centerRight,
+                        child: Builder(
+                          builder: (ctx) => HealthStrip(
+                            palette: palette,
+                            items: health.items,
+                            onTap: () =>
+                                DefaultTabController.of(ctx).animateTo(1),
+                          ),
                         ),
                       ),
                     ),
                   ],
-                ),
-              ),
-            ],
+                ],
+              );
+            },
           ),
           Divider(height: 1, color: stateColor.withOpacity(0.25)),
           // Baris bawah: statistik sejajar rata kiri
@@ -944,7 +988,14 @@ class _GcsHomeState extends State<GcsHome> {
   }
 
   // =========================================================
-  // TAB 2: MAPS & CAMERA
+  // TAB 2: PAYLOAD HEALTH + PRE-LAUNCH CHECK
+  // =========================================================
+  Widget _buildHealthTab() {
+    return HealthPanel(palette: palette, service: health);
+  }
+
+  // =========================================================
+  // TAB 3: MAPS & CAMERA
   // =========================================================
   Widget _buildMapCameraTab() {
     return Padding(

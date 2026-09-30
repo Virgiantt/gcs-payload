@@ -135,24 +135,32 @@ class AlertService {
     }
 
     // ---- packet loss (celah nomor paket pada N paket terakhir) ----
-    if (history.length >= 2) {
-      final w = history.length > AlertThresholds.lossWindow
-          ? history.sublist(history.length - AlertThresholds.lossWindow)
-          : history;
-      var missed = 0;
-      for (var i = 1; i < w.length; i++) {
-        final d = (w[i].packetCount - w[i - 1].packetCount).toInt();
-        if (d > 1) missed += d - 1; // d <= 0 = counter reset, abaikan
-      }
-      if (missed > 0) {
-        out.add(Alert('pkt_loss', AlertLevel.warning, 'PACKET LOSS',
-            'Missed $missed in last ${w.length} packets'));
-      }
+    final missed = missedPackets(history);
+    if (missed > 0) {
+      final n = history.length > AlertThresholds.lossWindow
+          ? AlertThresholds.lossWindow
+          : history.length;
+      out.add(Alert('pkt_loss', AlertLevel.warning, 'PACKET LOSS',
+          'Missed $missed in last $n packets'));
     }
 
     out.sort((a, b) => b.level.index.compareTo(a.level.index));
     _recordEvents(out, now);
     active = out;
+  }
+
+  /// Jumlah paket yang hilang (celah nomor paket) pada N paket terakhir.
+  static int missedPackets(List<Telemetry> history) {
+    if (history.length < 2) return 0;
+    final w = history.length > AlertThresholds.lossWindow
+        ? history.sublist(history.length - AlertThresholds.lossWindow)
+        : history;
+    var missed = 0;
+    for (var i = 1; i < w.length; i++) {
+      final d = (w[i].packetCount - w[i - 1].packetCount).toInt();
+      if (d > 1) missed += d - 1; // d <= 0 = counter reset, abaikan
+    }
+    return missed;
   }
 
   void _recordEvents(List<Alert> now, DateTime time) {
