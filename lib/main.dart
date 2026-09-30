@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show Platform, ServerSocket, Socket;
 import 'dart:math' as math;
@@ -9,11 +10,13 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'models/telemetry.dart';
+import 'services/alert_service.dart';
 import 'services/command_service.dart';
 import 'services/system_monitor.dart';
 import 'services/telemetry_logger.dart';
 import 'services/telemetry_service.dart';
 import 'theme/app_theme.dart';
+import 'widgets/alert_bar.dart';
 import 'widgets/camera_view.dart';
 import 'widgets/command_panel.dart';
 import 'widgets/connection_indicator.dart';
@@ -328,6 +331,10 @@ class _GcsHomeState extends State<GcsHome> {
   final EmbeddedSimulator simulator = EmbeddedSimulator();
   final SystemMonitor sysmon = SystemMonitor();
   final TelemetryLogger logger = TelemetryLogger();
+  final AlertService alerts = AlertService();
+  Timer? _alertTimer;
+  int _lastTotal = -1;
+  DateTime? _lastPacketAt;
   late final CommandService cmd = CommandService(
       host: service.host, port: kCommandPort, teamId: kSimTeamId);
   bool _isFullscreen = false;
@@ -338,6 +345,13 @@ class _GcsHomeState extends State<GcsHome> {
     super.initState();
     service.addListener(_onServiceUpdate);
     sysmon.start();
+    // Evaluasi alert tiap 1 detik (supaya 'telemetry delay' terus naik
+    // walaupun tidak ada paket masuk).
+    _alertTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted) return;
+      _runAlerts();
+      setState(() {});
+    });
     _boot();
   }
 
@@ -366,11 +380,30 @@ class _GcsHomeState extends State<GcsHome> {
   void _onServiceUpdate() {
     final t = service.latest;
     if (t != null) logger.log(t); // simpan setiap paket ke CSV
+
+    // catat waktu paket terakhir diterima (untuk alert TELEMETRY DELAY)
+    if (service.totalReceived > 0 && service.totalReceived != _lastTotal) {
+      _lastTotal = service.totalReceived;
+      _lastPacketAt = DateTime.now();
+    }
+    _runAlerts();
     if (mounted) setState(() {});
+  }
+
+  void _runAlerts() {
+    alerts.update(
+      latest: service.latest,
+      history: service.history,
+      lastPacketAt: _lastPacketAt,
+      telemetryLinkUp: service.status == ConnectionStatus.connected,
+      commandLinkUp: cmd.connected,
+      now: DateTime.now(),
+    );
   }
 
   @override
   void dispose() {
+    _alertTimer?.cancel();
     service.removeListener(_onServiceUpdate);
     service.dispose();
     simulator.stop();
@@ -421,6 +454,7 @@ class _GcsHomeState extends State<GcsHome> {
             Column(
               children: [
                 _buildHeader(),
+                AlertBar(palette: palette, service: alerts),
                 Expanded(child: _buildTabView()),
                 _buildStatusBar(),
               ],
