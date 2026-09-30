@@ -1,0 +1,27 @@
+name: gcs_cansat
+description: CanSat Ground Control Station — Flutter Desktop
+publish_to: "none"
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  fl_chart: ^0.69.0
+  window_manager: ^0.4.2
+  google_fonts: ^6.2.1
+  flutter_map: ^7.0.2
+  latlong2: ^0.9.1
+  camera: ^0.11.0+2
+  model_viewer_plus: ^1.9.3
+  flutter_3d_controller: ^2.2.0
+  ffi: ^2.2.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/icons/
+    - assets/models/
+    - assets/web/
