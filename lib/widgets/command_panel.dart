@@ -183,10 +183,11 @@ class _CommandPanelState extends State<CommandPanel> {
                           color: p.bad,
                           enabled: svc.armed && svc.connected,
                           dense: true,
+                          height: 32,
                           onTap: () => _sendCritical(_critical[i]),
                         ),
                         if (i != _critical.length - 1)
-                          const SizedBox(height: 6),
+                          const SizedBox(height: 5),
                       ],
                     ],
                   ),
@@ -292,7 +293,7 @@ class _CommandPanelState extends State<CommandPanel> {
     final armed = svc.armed;
     final c = armed ? p.warn : p.textDim;
     return Container(
-      padding: const EdgeInsets.all(10),
+      padding: EdgeInsets.all(compact ? 7 : 10),
       decoration: BoxDecoration(
         color: c.withOpacity(0.10),
         border: Border.all(color: c.withOpacity(0.5)),
@@ -322,6 +323,7 @@ class _CommandPanelState extends State<CommandPanel> {
             color: armed ? p.textDim : p.warn,
             enabled: armed || svc.connected,
             dense: true,
+            height: compact ? 32 : null,
             onTap: armed ? svc.disarm : svc.arm,
           ),
         ],
