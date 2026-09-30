@@ -13,6 +13,7 @@ import 'models/telemetry.dart';
 import 'services/alert_service.dart';
 import 'services/command_service.dart';
 import 'services/health_service.dart';
+import 'services/preflight_service.dart';
 import 'services/system_monitor.dart';
 import 'services/telemetry_logger.dart';
 import 'services/telemetry_service.dart';
@@ -27,6 +28,7 @@ import 'widgets/health_strip.dart';
 import 'widgets/live_chart.dart';
 import 'widgets/map_view.dart';
 import 'widgets/model_3d_glb.dart';
+import 'widgets/preflight_panel.dart';
 import 'widgets/telemetry_log_table.dart';
 
 // =========================================================
@@ -342,6 +344,11 @@ class _GcsHomeState extends State<GcsHome> {
   DateTime? _lastPacketAt;
   late final CommandService cmd = CommandService(
       host: service.host, port: kCommandPort, teamId: kSimTeamId);
+  // Pre-Flight Check: LAUNCH terkunci sampai semua item lulus
+  late final PreflightService preflight = PreflightService(
+    inputs: _healthInputs,
+    commandUp: () => cmd.connected,
+  );
   bool _isFullscreen = false;
   final List<String> _simLog = [];
 
@@ -404,6 +411,7 @@ class _GcsHomeState extends State<GcsHome> {
 
   void _runAlerts() {
     health.refresh();
+    preflight.refresh();
     alerts.update(
       latest: service.latest,
       history: service.history,
@@ -414,10 +422,26 @@ class _GcsHomeState extends State<GcsHome> {
     );
   }
 
+  /// Dipanggil dari tombol LAUNCH di tab Pre-Flight.
+  void _onLaunch() {
+    if (!preflight.launchAllowed) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('LAUNCH BLOCKED — pre-flight check belum lolos')),
+      );
+      return;
+    }
+    // TODO: kirim command LAUNCH lewat `cmd` (sesuaikan API CommandService)
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('LAUNCH command dikirim')),
+    );
+  }
+
   @override
   void dispose() {
     _alertTimer?.cancel();
     health.dispose();
+    preflight.dispose();
     service.removeListener(_onServiceUpdate);
     service.dispose();
     simulator.stop();
@@ -670,7 +694,7 @@ class _GcsHomeState extends State<GcsHome> {
   // =========================================================
   Widget _buildTabView() {
     return DefaultTabController(
-      length: 5,
+      length: 6,
       child: Container(
         margin: const EdgeInsets.all(14),
         decoration: BoxDecoration(
@@ -696,6 +720,11 @@ class _GcsHomeState extends State<GcsHome> {
                   iconMargin: EdgeInsets.only(bottom: 2),
                 ),
                 Tab(
+                  icon: Icon(Icons.checklist_rtl, size: 16),
+                  text: 'Pre-Flight',
+                  iconMargin: EdgeInsets.only(bottom: 2),
+                ),
+                Tab(
                   icon: Icon(Icons.map_outlined, size: 16),
                   text: 'Maps & Camera',
                   iconMargin: EdgeInsets.only(bottom: 2),
@@ -718,6 +747,11 @@ class _GcsHomeState extends State<GcsHome> {
                 children: [
                   _buildDashboardTab(),
                   _buildHealthTab(),
+                  PreflightPanel(
+                    palette: palette,
+                    service: preflight,
+                    onLaunch: _onLaunch,
+                  ),
                   _buildMapCameraTab(),
                   _build3DTab(),
                   _buildChartsTab(),
@@ -988,14 +1022,14 @@ class _GcsHomeState extends State<GcsHome> {
   }
 
   // =========================================================
-  // TAB 2: PAYLOAD HEALTH + PRE-LAUNCH CHECK
+  // TAB 2: PAYLOAD HEALTH
   // =========================================================
   Widget _buildHealthTab() {
     return HealthPanel(palette: palette, service: health);
   }
 
   // =========================================================
-  // TAB 3: MAPS & CAMERA
+  // TAB 4: MAPS & CAMERA
   // =========================================================
   Widget _buildMapCameraTab() {
     return Padding(
@@ -1072,7 +1106,7 @@ class _GcsHomeState extends State<GcsHome> {
   }
 
   // =========================================================
-  // TAB 3: 3D MODEL (dari payload.glb)
+  // TAB 5: 3D MODEL (dari payload.glb)
   // =========================================================
   Widget _build3DTab() {
     return Padding(
@@ -1226,7 +1260,7 @@ class _GcsHomeState extends State<GcsHome> {
   }
 
   // =========================================================
-  // TAB 4: LIVE CHARTS
+  // TAB 6: LIVE CHARTS
   // =========================================================
   Widget _buildChartsTab() {
     final h = service.history;
