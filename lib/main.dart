@@ -28,6 +28,7 @@ import 'widgets/health_strip.dart';
 import 'widgets/live_chart.dart';
 import 'widgets/map_view.dart';
 import 'widgets/model_3d_glb.dart';
+import 'widgets/model_3d_native.dart';
 import 'widgets/preflight_panel.dart';
 import 'widgets/telemetry_log_table.dart';
 
@@ -35,6 +36,8 @@ import 'widgets/telemetry_log_table.dart';
 // KONFIGURASI SIMULATOR (embedded)
 // =========================================================
 const int kCommandPort = 9998;
+// Nama command launch yang dikirim CommandPanel (sesuaikan kalau beda)
+const String kLaunchCmd = 'LAUNCH';
 const String kSimTeamId = '1064';
 const double kSimBaseLat = -7.275764;
 const double kSimBaseLon = 112.794317;
@@ -55,6 +58,16 @@ bool get _isDesktopPlatform {
   return false;
 }
 
+// flutter_inappwebview tidak punya implementasi Linux (termasuk flutter-pi),
+// jadi InAppWebView melempar "Null check operator used on a null value".
+bool get _webViewSupported {
+  if (kIsWeb) return true;
+  return Platform.isAndroid ||
+      Platform.isIOS ||
+      Platform.isMacOS ||
+      Platform.isWindows;
+}
+
 // =========================================================
 // FLIGHT PROFILE (Dart port dari cansat_simulator.py)
 // =========================================================
@@ -63,6 +76,10 @@ class FlightProfile {
   late DateTime _start;
   int packetCount = 0;
 
+  /// Payload TIDAK akan naik (ascend) sebelum launch() dipanggil.
+  bool launched = false;
+  DateTime? _launchAt;
+
   FlightProfile() {
     reset();
   }
@@ -70,12 +87,31 @@ class FlightProfile {
   void reset() {
     _start = DateTime.now();
     packetCount = 0;
+    launched = false;
+    _launchAt = null;
   }
+
+  void launch() {
+    launched = true;
+    _launchAt = DateTime.now();
+  }
+
+  /// true selama fase ASCENT..DESCENT (belum mendarat)
+  bool get inFlight =>
+      launched &&
+      _launchAt != null &&
+      10.0 + DateTime.now().difference(_launchAt!).inMilliseconds / 1000.0 <=
+          90.0;
 
   String step() {
     packetCount++;
     final elapsed = DateTime.now().difference(_start).inMilliseconds / 1000.0;
-    final cycleTime = elapsed % 110.0;
+    // Belum launch -> tetap di LAUNCH_PAD (cycleTime 0).
+    // Sudah launch -> mulai dari awal fase ASCENT (10 dtk), lalu berjalan
+    // sampai LANDED dan berhenti di sana (tidak looping otomatis).
+    final cycleTime = (!launched || _launchAt == null)
+        ? 0.0
+        : 10.0 + DateTime.now().difference(_launchAt!).inMilliseconds / 1000.0;
 
     String state;
     double alt, roll, pitch, yaw;
@@ -168,6 +204,28 @@ class EmbeddedSimulator {
 
   void Function(String msg)? onLog;
 
+  /// Interlock: dipasang GCS -> true jika Pre-Flight Check sudah lolos.
+  bool Function()? canLaunch;
+
+  /// Dipanggil setelah launch berhasil (GCS memakainya untuk reset preflight).
+  void Function()? onLaunched;
+
+  /// Coba launch. Ditolak jika preflight belum lolos atau sedang terbang.
+  bool requestLaunch() {
+    if (_profile.inFlight) {
+      _log('[LAUNCH] Ditolak: payload sedang terbang');
+      return false;
+    }
+    if (canLaunch == null || !canLaunch!()) {
+      _log('[LAUNCH] BLOCKED — Pre-Flight Check belum lolos');
+      return false;
+    }
+    _profile.launch();
+    _log('[LAUNCH] Pre-flight OK -> payload ASCEND');
+    onLaunched?.call();
+    return true;
+  }
+
   Future<void> start() async {
     _server = await ServerSocket.bind(host, port);
     _running = true;
@@ -202,7 +260,15 @@ class EmbeddedSimulator {
         if (p.length >= 4 && p[0] == 'CMD') {
           final id = p[2];
           final name = p[3];
-          _log('[CMD] Received $name (id $id) -> executing (simulated)');
+          _log('[CMD] Received $name (id $id)');
+          if (name.toUpperCase() == kLaunchCmd) {
+            if (!requestLaunch()) {
+              try {
+                s.write('NACK,$id,$name,PREFLIGHT_NOT_PASSED\r\n');
+              } catch (_) {}
+              return;
+            }
+          }
           Future.delayed(const Duration(milliseconds: 400), () {
             try {
               s.write('ACK,$id,$name\r\n');
@@ -280,6 +346,16 @@ ThemeData _buildTheme(AppPalette p) {
 // =========================================================
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Tampilkan error ASLI. Tanpa ini Flutter mem-throttle log menjadi
+  // "Another exception was thrown: Instance of 'DiagnosticsProperty<void>'".
+  FlutterError.onError = (details) {
+    debugPrint('[FLUTTER-ERR] ${details.exceptionAsString()}');
+    final st = details.stack;
+    if (st != null) {
+      debugPrint(st.toString().split('\n').take(10).join('\n'));
+    }
+  };
 
   if (_isDesktopPlatform) {
     await windowManager.ensureInitialized();
@@ -368,6 +444,11 @@ class _GcsHomeState extends State<GcsHome> {
   }
 
   Future<void> _boot() async {
+    // Interlock: payload hanya boleh ascend jika Pre-Flight Check lolos.
+    simulator.canLaunch = () => preflight.launchAllowed;
+    // Setelah launch, check harus diulang untuk launch berikutnya.
+    simulator.onLaunched = () => preflight.reset();
+
     simulator.onLog = (msg) {
       debugPrint('[SIM] $msg');
       if (mounted) {
@@ -424,16 +505,13 @@ class _GcsHomeState extends State<GcsHome> {
 
   /// Dipanggil dari tombol LAUNCH di tab Pre-Flight.
   void _onLaunch() {
-    if (!preflight.launchAllowed) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text('LAUNCH BLOCKED — pre-flight check belum lolos')),
-      );
-      return;
-    }
-    // TODO: kirim command LAUNCH lewat `cmd` (sesuaikan API CommandService)
+    final ok = simulator.requestLaunch();
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('LAUNCH command dikirim')),
+      SnackBar(
+        content: Text(ok
+            ? 'LAUNCH — payload ascend'
+            : 'LAUNCH BLOCKED — pre-flight check belum lolos'),
+      ),
     );
   }
 
@@ -1120,13 +1198,20 @@ class _GcsHomeState extends State<GcsHome> {
               children: [
                 _section('PAYLOAD 3D MODEL'),
                 Expanded(
-                  child: Model3DGlbView(
-                    // key tetap supaya WebView tidak dibuat ulang
-                    key: const ValueKey('payload3d'),
-                    palette: palette,
-                    data: service.latest,
-                    assetPath: 'assets/models/payload.glb',
-                  ),
+                  child: _webViewSupported
+                      ? Model3DGlbView(
+                          // key tetap supaya WebView tidak dibuat ulang
+                          key: const ValueKey('payload3d'),
+                          palette: palette,
+                          data: service.latest,
+                          assetPath: 'assets/models/payload.glb',
+                        )
+                      : Model3DNativeView(
+                          key: const ValueKey('payload3d-native'),
+                          palette: palette,
+                          data: service.latest,
+                          assetPath: 'assets/models/payload.glb',
+                        ),
                 ),
               ],
             ),
