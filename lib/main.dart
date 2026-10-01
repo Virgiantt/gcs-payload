@@ -19,12 +19,10 @@ import 'services/telemetry_logger.dart';
 import 'services/telemetry_service.dart';
 import 'theme/app_theme.dart';
 import 'widgets/alert_bar.dart';
-import 'widgets/camera_view.dart';
 import 'widgets/command_panel.dart';
 import 'widgets/connection_indicator.dart';
 import 'widgets/gps_panel.dart';
 import 'widgets/health_panel.dart';
-import 'widgets/health_strip.dart';
 import 'widgets/live_chart.dart';
 import 'widgets/map_view.dart';
 import 'widgets/model_3d_glb.dart';
@@ -38,6 +36,8 @@ import 'widgets/telemetry_log_table.dart';
 const int kCommandPort = 9998;
 // Nama command launch yang dikirim CommandPanel (sesuaikan kalau beda)
 const String kLaunchCmd = 'LAUNCH';
+// Logo header (ganti path ini kalau lokasi file berbeda)
+const String kLogoAsset = 'assets/icons/assets1.jpeg';
 const String kSimTeamId = '1064';
 const double kSimBaseLat = -7.275764;
 const double kSimBaseLon = 112.794317;
@@ -606,7 +606,7 @@ class _GcsHomeState extends State<GcsHome> {
             child: Padding(
               padding: const EdgeInsets.all(6),
               child: Image.asset(
-                'assets/icons/cansat.png',
+                kLogoAsset,
                 fit: BoxFit.contain,
                 errorBuilder: (_, __, ___) => Icon(
                   Icons.satellite_alt,
@@ -624,7 +624,7 @@ class _GcsHomeState extends State<GcsHome> {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Text(
-                'CanSat Ground Control Station',
+                'Ambaload Ground Control Station',
                 style: TextStyle(
                   color: palette.text,
                   fontSize: 17,
@@ -637,15 +637,6 @@ class _GcsHomeState extends State<GcsHome> {
                   Text(
                     'Team 1064  ·  Target ${service.host}:${service.port}',
                     style: TextStyle(color: palette.textDim, fontSize: 11),
-                  ),
-                  const SizedBox(width: 8),
-                  SizedBox(
-                    height: 14,
-                    child: Image.asset(
-                      'assets/icons/pens.png',
-                      fit: BoxFit.contain,
-                      errorBuilder: (_, __, ___) => const SizedBox.shrink(),
-                    ),
                   ),
                 ],
               ),
@@ -772,7 +763,7 @@ class _GcsHomeState extends State<GcsHome> {
   // =========================================================
   Widget _buildTabView() {
     return DefaultTabController(
-      length: 6,
+      length: 5,
       child: Container(
         margin: const EdgeInsets.all(14),
         decoration: BoxDecoration(
@@ -804,17 +795,12 @@ class _GcsHomeState extends State<GcsHome> {
                 ),
                 Tab(
                   icon: Icon(Icons.map_outlined, size: 16),
-                  text: 'Maps & Camera',
+                  text: 'Maps',
                   iconMargin: EdgeInsets.only(bottom: 2),
                 ),
                 Tab(
                   icon: Icon(Icons.view_in_ar_outlined, size: 16),
                   text: '3D Model',
-                  iconMargin: EdgeInsets.only(bottom: 2),
-                ),
-                Tab(
-                  icon: Icon(Icons.show_chart, size: 16),
-                  text: 'Live Charts',
                   iconMargin: EdgeInsets.only(bottom: 2),
                 ),
               ],
@@ -832,7 +818,6 @@ class _GcsHomeState extends State<GcsHome> {
                   ),
                   _buildMapCameraTab(),
                   _build3DTab(),
-                  _buildChartsTab(),
                 ],
               ),
             ),
@@ -844,46 +829,143 @@ class _GcsHomeState extends State<GcsHome> {
 
   // =========================================================
   // TAB 1: DASHBOARD
-  //   Baris atas : Flight State (kiri) + Command Center (kanan)
-  //   Baris bawah: Telemetry table selebar layar
+  //   Baris 1: Flight State | Command Center | Maps | 3D Model
+  //   Baris 2: Live charts (4 grafik sejajar)
+  //   Baris 3: Telemetry table selebar layar
+  //   Baris 4: Status simpan CSV
   // =========================================================
   Widget _buildDashboardTab() {
     final t = service.latest;
     final history = service.history;
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-          child: SizedBox(
-            height: 248,
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // Baris 1: 4 kotak sejajar
+          SizedBox(
+            height: 320,
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Expanded(flex: 4, child: _buildHeroStatus(t)),
+                Expanded(flex: 3, child: _buildHeroStatus(t)),
                 const SizedBox(width: 12),
                 Expanded(
-                  flex: 6,
+                  flex: 5,
                   child: CommandPanel(
                     palette: palette,
                     service: cmd,
                     compact: true,
                   ),
                 ),
+                const SizedBox(width: 12),
+                Expanded(
+                  flex: 4,
+                  child: MapView(
+                    palette: palette,
+                    data: service.latest,
+                    history: service.history,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  flex: 4,
+                  child: _webViewSupported
+                      ? Model3DGlbView(
+                          key: const ValueKey('payload3d-dash'),
+                          palette: palette,
+                          data: service.latest,
+                          assetPath: 'assets/models/payload.glb',
+                        )
+                      : Model3DNativeView(
+                          key: const ValueKey('payload3d-dash-native'),
+                          palette: palette,
+                          data: service.latest,
+                          assetPath: 'assets/models/payload.glb',
+                        ),
+                ),
               ],
             ),
           ),
-        ),
-        const SizedBox(height: 12),
-        Expanded(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          const SizedBox(height: 12),
+
+          // Baris 2: Live charts
+          SizedBox(
+            height: 230,
+            child: _liveCharts(),
+          ),
+          const SizedBox(height: 12),
+
+          // Baris 3: Telemetry table
+          SizedBox(
+            height: 300,
             child: TelemetryLogTable(
               palette: palette,
               history: history,
-              maxRows: 10,
+              maxRows: 5,
             ),
+          ),
+          const SizedBox(height: 12),
+
+          // Baris 4: status penyimpanan CSV
+          _buildLogBar(),
+        ],
+      ),
+    );
+  }
+
+  /// 4 grafik live sejajar untuk Dashboard.
+  Widget _liveCharts() {
+    final h = service.history;
+    // Nomor sampel absolut (terus naik) -> label sumbu X ikut bergeser
+    final offset = service.totalReceived - h.length;
+
+    List<FlSpot> spots(double Function(Telemetry) sel) => List.generate(
+          h.length,
+          (i) => FlSpot((offset + i).toDouble(), sel(h[i])),
+        );
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Expanded(
+          child: LiveChart(
+            palette: palette,
+            title: 'Altitude',
+            unit: 'm',
+            lineColor: palette.accent,
+            spots: spots((t) => t.altitude),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: LiveChart(
+            palette: palette,
+            title: 'Temperature',
+            unit: '°C',
+            lineColor: const Color(0xFFF59E0B),
+            spots: spots((t) => t.temperature),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: LiveChart(
+            palette: palette,
+            title: 'Pressure',
+            unit: 'hPa',
+            lineColor: const Color(0xFFEF4444),
+            spots: spots((t) => t.pressure),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: LiveChart(
+            palette: palette,
+            title: 'Battery Voltage',
+            unit: 'V',
+            lineColor: const Color(0xFF22C55E),
+            spots: spots((t) => t.voltage),
           ),
         ),
       ],
@@ -922,37 +1004,41 @@ class _GcsHomeState extends State<GcsHome> {
               label,
               style: TextStyle(
                 color: palette.textDim,
-                fontSize: 10,
+                fontSize: 9,
                 fontWeight: FontWeight.w700,
-                letterSpacing: 1.6,
+                letterSpacing: 1.2,
               ),
             ),
             const SizedBox(height: 4),
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.baseline,
-              textBaseline: TextBaseline.alphabetic,
-              children: [
-                Text(
-                  value,
-                  style: TextStyle(
-                    color: palette.text,
-                    fontSize: 24,
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-                if (unit != null) ...[
-                  const SizedBox(width: 4),
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.baseline,
+                textBaseline: TextBaseline.alphabetic,
+                children: [
                   Text(
-                    unit,
+                    value,
                     style: TextStyle(
-                      color: palette.textDim,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
+                      color: palette.text,
+                      fontSize: 20,
+                      fontWeight: FontWeight.w800,
                     ),
                   ),
+                  if (unit != null) ...[
+                    const SizedBox(width: 3),
+                    Text(
+                      unit,
+                      style: TextStyle(
+                        color: palette.textDim,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
                 ],
-              ],
+              ),
             ),
           ],
         ),
@@ -960,7 +1046,7 @@ class _GcsHomeState extends State<GcsHome> {
     }
 
     return Container(
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         gradient: LinearGradient(
           colors: [
@@ -977,84 +1063,62 @@ class _GcsHomeState extends State<GcsHome> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          // Baris atas: ikon + flight state + ringkasan Payload Health
-          LayoutBuilder(
-            builder: (context, c) {
-              final showStrip = c.maxWidth > 520;
-              return Row(
-                children: [
-                  Container(
-                    width: 56,
-                    height: 56,
-                    decoration: BoxDecoration(
-                      color: stateColor.withOpacity(0.2),
-                      shape: BoxShape.circle,
+          // Ikon + flight state
+          Row(
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: stateColor.withOpacity(0.2),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(_stateIcon(t?.state), color: stateColor, size: 24),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      'FLIGHT STATE',
+                      style: TextStyle(
+                        color: palette.textDim,
+                        fontSize: 9,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 1.2,
+                      ),
                     ),
-                    child:
-                        Icon(_stateIcon(t?.state), color: stateColor, size: 30),
-                  ),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    flex: 4,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          'FLIGHT STATE',
-                          style: TextStyle(
-                            color: palette.textDim,
-                            fontSize: 10,
-                            fontWeight: FontWeight.w700,
-                            letterSpacing: 1.6,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        FittedBox(
-                          fit: BoxFit.scaleDown,
-                          alignment: Alignment.centerLeft,
-                          child: Text(
-                            t?.state ?? 'WAITING',
-                            style: TextStyle(
-                              color: stateColor,
-                              fontSize: 28,
-                              fontWeight: FontWeight.w800,
-                              letterSpacing: 1.5,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  if (showStrip) ...[
-                    const SizedBox(width: 12),
-                    Expanded(
-                      flex: 5,
-                      child: Align(
-                        alignment: Alignment.centerRight,
-                        child: Builder(
-                          builder: (ctx) => HealthStrip(
-                            palette: palette,
-                            items: health.items,
-                            onTap: () =>
-                                DefaultTabController.of(ctx).animateTo(1),
-                          ),
+                    const SizedBox(height: 2),
+                    FittedBox(
+                      fit: BoxFit.scaleDown,
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        t?.state ?? 'WAITING',
+                        style: TextStyle(
+                          color: stateColor,
+                          fontSize: 24,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 1.2,
                         ),
                       ),
                     ),
                   ],
-                ],
-              );
-            },
+                ),
+              ),
+            ],
           ),
           Divider(height: 1, color: stateColor.withOpacity(0.25)),
-          // Baris bawah: statistik sejajar rata kiri
+          // Statistik
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               stat('ALTITUDE', t == null ? '—' : t.altitude.toStringAsFixed(1),
                   unit: 'm'),
+              const SizedBox(width: 6),
               stat('MISSION TIME', t?.missionTime ?? '--:--:--'),
+              const SizedBox(width: 6),
               stat(
                   'PACKET',
                   t == null
@@ -1107,7 +1171,7 @@ class _GcsHomeState extends State<GcsHome> {
   }
 
   // =========================================================
-  // TAB 4: MAPS & CAMERA
+  // TAB 4: MAPS
   // =========================================================
   Widget _buildMapCameraTab() {
     return Padding(
@@ -1136,9 +1200,6 @@ class _GcsHomeState extends State<GcsHome> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _section('LIVE CAMERA'),
-                Expanded(child: CameraView(palette: palette)),
-                const SizedBox(height: 12),
                 _section('GPS TELEMETRY'),
                 Expanded(
                   child: GpsPanel(palette: palette, data: service.latest),
@@ -1345,71 +1406,6 @@ class _GcsHomeState extends State<GcsHome> {
   }
 
   // =========================================================
-  // TAB 6: LIVE CHARTS
-  // =========================================================
-  Widget _buildChartsTab() {
-    final h = service.history;
-
-    // Nomor sampel absolut (terus naik) -> label sumbu X ikut bergeser
-    final offset = service.totalReceived - h.length;
-
-    List<FlSpot> spots(double Function(Telemetry) sel) {
-      return List.generate(h.length, (i) {
-        return FlSpot((offset + i).toDouble(), sel(h[i]));
-      });
-    }
-
-    return Padding(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          _buildLogBar(),
-          const SizedBox(height: 12),
-          Expanded(
-            child: GridView.count(
-              crossAxisCount: 2,
-              mainAxisSpacing: 12,
-              crossAxisSpacing: 12,
-              childAspectRatio: 2.4,
-              children: [
-                LiveChart(
-                  palette: palette,
-                  title: 'Altitude vs Time',
-                  unit: 'm',
-                  lineColor: palette.accent,
-                  spots: spots((t) => t.altitude),
-                ),
-                LiveChart(
-                  palette: palette,
-                  title: 'Temperature vs Time',
-                  unit: '°C',
-                  lineColor: const Color(0xFFF59E0B),
-                  spots: spots((t) => t.temperature),
-                ),
-                LiveChart(
-                  palette: palette,
-                  title: 'Pressure vs Time',
-                  unit: 'hPa',
-                  lineColor: const Color(0xFFEF4444),
-                  spots: spots((t) => t.pressure),
-                ),
-                LiveChart(
-                  palette: palette,
-                  title: 'Battery Voltage vs Time',
-                  unit: 'V',
-                  lineColor: const Color(0xFF22C55E),
-                  spots: spots((t) => t.voltage),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // =========================================================
   // STATUS BAR
   // =========================================================
   Widget _buildStatusBar() {
@@ -1452,8 +1448,6 @@ class _GcsHomeState extends State<GcsHome> {
           const SizedBox(width: 16),
           Container(width: 1, height: 16, color: palette.border),
           const SizedBox(width: 12),
-          _footerLogo('assets/icons/pens.png', 'PENS', 16),
-          const SizedBox(width: 8),
           _footerLogo('assets/icons/eepisat.png', 'EEPISAT', 16),
           const SizedBox(width: 8),
           _footerLogo('assets/icons/indonesia.png', 'Indonesia', 14,

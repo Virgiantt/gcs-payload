@@ -10,10 +10,11 @@ class _Def {
   const _Def(this.name, this.label, this.icon);
 }
 
-/// Panel perintah: ARM -> konfirmasi -> kirim -> tunggu ACK.
+/// Panel perintah: ARM -> pilih perintah kritis (dropdown) -> konfirmasi
+/// -> kirim -> tunggu ACK.
 ///
-/// [compact] = true -> layout 3 kolom (ARM+kritis | quick+custom | log),
-/// cocok ditaruh di samping kartu Flight State.
+/// Layout: Command Log (persegi panjang) di atas, lalu dropdown perintah
+/// kritis, lalu kolom perintah + tombol Send.
 class CommandPanel extends StatefulWidget {
   final AppPalette palette;
   final CommandService service;
@@ -38,13 +39,6 @@ class _CommandPanelState extends State<CommandPanel> {
     _Def('SEPARATE_1', 'Separate Stage 1', Icons.call_split),
     _Def('SEPARATE_2', 'Separate Stage 2', Icons.call_split),
     _Def('PAYLOAD_RELEASE', 'Release Payload', Icons.unarchive_outlined),
-  ];
-  static const List<_Def> _quick = [
-    _Def('PING', 'Ping', Icons.wifi_tethering),
-    _Def('CAM_ON', 'Cam ON', Icons.videocam_outlined),
-    _Def('CAM_OFF', 'Cam OFF', Icons.videocam_off_outlined),
-    _Def('BUZZER_ON', 'Buzzer ON', Icons.volume_up_outlined),
-    _Def('BUZZER_OFF', 'Buzzer OFF', Icons.volume_off_outlined),
   ];
 
   AppPalette get p => widget.palette;
@@ -78,11 +72,22 @@ class _CommandPanelState extends State<CommandPanel> {
     if (ok == true) svc.send(d.name);
   }
 
-  void _sendCustom() {
-    final v = _ctrl.text;
-    if (v.trim().isEmpty) return;
-    svc.send(v);
-    _ctrl.clear();
+  /// Satu tombol Send: kirim isi kolom perintah.
+  /// Jika isinya perintah kritis (dipilih dari dropdown) -> minta konfirmasi dulu.
+  void _send() {
+    final v = _ctrl.text.trim();
+    if (v.isEmpty || !svc.connected) return;
+    final crit = _critical.where((d) => d.name == v.toUpperCase());
+    if (crit.isNotEmpty) {
+      _sendCritical(crit.first).then((_) {
+        if (mounted) _ctrl.clear();
+        if (mounted) setState(() {});
+      });
+    } else {
+      svc.send(v);
+      _ctrl.clear();
+      setState(() {});
+    }
   }
 
   @override
@@ -96,67 +101,13 @@ class _CommandPanelState extends State<CommandPanel> {
           borderRadius: BorderRadius.circular(12),
         ),
         clipBehavior: Clip.hardEdge,
-        child: widget.compact ? _compactBody() : _fullBody(),
+        child: _body(),
       ),
     );
   }
 
-  // ---------------- layout penuh (vertikal) ----------------
-  Widget _fullBody() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        _header(),
-        Expanded(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                _armBlock(),
-                const SizedBox(height: 10),
-                for (final d in _critical) ...[
-                  _btn(
-                    label: d.label,
-                    icon: d.icon,
-                    color: p.bad,
-                    enabled: svc.armed && svc.connected,
-                    onTap: () => _sendCritical(d),
-                  ),
-                  const SizedBox(height: 8),
-                ],
-                const SizedBox(height: 4),
-                _label('QUICK ACTIONS'),
-                Wrap(
-                  spacing: 6,
-                  runSpacing: 6,
-                  children: [
-                    for (final d in _quick)
-                      _btn(
-                        label: d.label,
-                        icon: d.icon,
-                        color: p.accent,
-                        enabled: svc.connected,
-                        dense: true,
-                        onTap: () => svc.send(d.name),
-                      ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                _label('CUSTOM COMMAND'),
-                _customField(),
-              ],
-            ),
-          ),
-        ),
-        Divider(height: 1, color: p.border),
-        SizedBox(height: 150, child: _logView()),
-      ],
-    );
-  }
-
-  // ---------------- layout compact (3 kolom, semua diawali label) ----------------
-  Widget _compactBody() {
+  // ---------------- layout: log (persegi panjang) di atas, kontrol di bawah ----------------
+  Widget _body() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -164,90 +115,39 @@ class _CommandPanelState extends State<CommandPanel> {
         Expanded(
           child: Padding(
             padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
-            child: Row(
+            child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                // Kolom 1: ARM + perintah kritis
+                _label('COMMAND LOG'),
                 Expanded(
-                  flex: 5,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      _label('CRITICAL COMMANDS'),
-                      _armBlock(compact: true),
-                      const SizedBox(height: 8),
-                      for (int i = 0; i < _critical.length; i++) ...[
-                        _btn(
-                          label: _critical[i].label,
-                          icon: _critical[i].icon,
-                          color: p.bad,
-                          enabled: svc.armed && svc.connected,
-                          dense: true,
-                          height: 32,
-                          onTap: () => _sendCritical(_critical[i]),
-                        ),
-                        if (i != _critical.length - 1)
-                          const SizedBox(height: 5),
-                      ],
-                    ],
+                  child: Container(
+                    decoration: BoxDecoration(
+                      border: Border.all(color: p.border),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    clipBehavior: Clip.hardEdge,
+                    child: _logView(showTitle: false),
                   ),
                 ),
-                const SizedBox(width: 14),
-                // Kolom 2: Quick actions (grid 2 kolom) + custom command
-                Expanded(
-                  flex: 4,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      _label('QUICK ACTIONS'),
-                      LayoutBuilder(
-                        builder: (context, c) {
-                          final w = (c.maxWidth - 6) / 2;
-                          return Wrap(
-                            spacing: 6,
-                            runSpacing: 6,
-                            children: [
-                              for (final d in _quick)
-                                _btn(
-                                  label: d.label,
-                                  icon: d.icon,
-                                  color: p.accent,
-                                  enabled: svc.connected,
-                                  dense: true,
-                                  width: w,
-                                  height: 32,
-                                  onTap: () => svc.send(d.name),
-                                ),
-                            ],
-                          );
-                        },
-                      ),
-                      const Spacer(),
-                      _label('CUSTOM COMMAND'),
-                      _customField(),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 14),
-                // Kolom 3: log
-                Expanded(
-                  flex: 4,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      _label('COMMAND LOG'),
-                      Expanded(
-                        child: Container(
-                          decoration: BoxDecoration(
-                            border: Border.all(color: p.border),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          clipBehavior: Clip.hardEdge,
-                          child: _logView(showTitle: false),
-                        ),
-                      ),
-                    ],
-                  ),
+                const SizedBox(height: 10),
+                _label('CRITICAL COMMANDS'),
+                _criticalDropdown(),
+                const SizedBox(height: 8),
+                // Kolom perintah + satu tombol Send
+                Row(
+                  children: [
+                    Expanded(child: _commandField()),
+                    const SizedBox(width: 6),
+                    _btn(
+                      label: 'Send',
+                      icon: Icons.send,
+                      color: p.accent,
+                      enabled: svc.connected && _ctrl.text.trim().isNotEmpty,
+                      dense: true,
+                      height: 38,
+                      onTap: _send,
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -289,44 +189,62 @@ class _CommandPanelState extends State<CommandPanel> {
     );
   }
 
-  Widget _armBlock({bool compact = false}) {
-    final armed = svc.armed;
-    final c = armed ? p.warn : p.textDim;
+  // ---------------- dropdown perintah kritis ----------------
+  // Memilih item hanya mengisi kolom perintah; pengiriman lewat tombol Send
+  // (perintah kritis tetap minta konfirmasi).
+  Widget _criticalDropdown() {
+    final enabled = svc.connected;
+    final c = enabled ? p.bad : p.textDim.withOpacity(0.5);
     return Container(
-      padding: EdgeInsets.all(compact ? 7 : 10),
+      height: 38,
+      padding: const EdgeInsets.symmetric(horizontal: 10),
       decoration: BoxDecoration(
-        color: c.withOpacity(0.10),
-        border: Border.all(color: c.withOpacity(0.5)),
+        color: c.withOpacity(enabled ? 0.08 : 0.04),
+        border: Border.all(color: c.withOpacity(enabled ? 0.6 : 0.3)),
         borderRadius: BorderRadius.circular(8),
       ),
-      child: Row(
-        children: [
-          Icon(armed ? Icons.lock_open : Icons.lock_outline,
-              color: c, size: 20),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              armed
-                  ? 'ARMED · ${svc.armedSecondsLeft}s'
-                  : (compact
-                      ? 'SAFE · terkunci'
-                      : 'SAFE · perintah kritis terkunci'),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                  color: c, fontSize: 12, fontWeight: FontWeight.w700),
-            ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<_Def>(
+          value: null,
+          isExpanded: true,
+          isDense: true,
+          dropdownColor: p.panel,
+          icon: Icon(Icons.arrow_drop_down, color: c),
+          hint: Text(
+            'Pilih perintah kritis',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style:
+                TextStyle(color: c, fontSize: 12, fontWeight: FontWeight.w600),
           ),
-          _btn(
-            label: armed ? 'DISARM' : 'ARM',
-            icon: armed ? Icons.lock : Icons.shield_outlined,
-            color: armed ? p.textDim : p.warn,
-            enabled: armed || svc.connected,
-            dense: true,
-            height: compact ? 32 : null,
-            onTap: armed ? svc.disarm : svc.arm,
-          ),
-        ],
+          onChanged: enabled
+              ? (d) {
+                  if (d == null) return;
+                  setState(() {
+                    _ctrl.text = d.name;
+                    _ctrl.selection =
+                        TextSelection.collapsed(offset: _ctrl.text.length);
+                  });
+                }
+              : null,
+          items: [
+            for (final d in _critical)
+              DropdownMenuItem<_Def>(
+                value: d,
+                child: Row(
+                  children: [
+                    Icon(d.icon, size: 16, color: p.bad),
+                    const SizedBox(width: 8),
+                    Text(d.label,
+                        style: TextStyle(
+                            color: p.text,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600)),
+                  ],
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }
@@ -341,46 +259,32 @@ class _CommandPanelState extends State<CommandPanel> {
                 letterSpacing: 1.2)),
       );
 
-  Widget _customField() {
-    return Row(
-      children: [
-        Expanded(
-          child: SizedBox(
-            height: 34,
-            child: TextField(
-              controller: _ctrl,
-              enabled: svc.connected,
-              textCapitalization: TextCapitalization.characters,
-              onSubmitted: (_) => _sendCustom(),
-              style: TextStyle(color: p.text, fontSize: 12),
-              decoration: InputDecoration(
-                hintText: 'mis. CAM_ON',
-                hintStyle: TextStyle(color: p.textDim, fontSize: 12),
-                isDense: true,
-                contentPadding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                  borderSide: BorderSide(color: p.border),
-                ),
-                enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                  borderSide: BorderSide(color: p.border),
-                ),
-              ),
-            ),
+  Widget _commandField() {
+    return SizedBox(
+      height: 38,
+      child: TextField(
+        controller: _ctrl,
+        enabled: svc.connected,
+        textCapitalization: TextCapitalization.characters,
+        onChanged: (_) => setState(() {}),
+        onSubmitted: (_) => _send(),
+        style: TextStyle(color: p.text, fontSize: 12),
+        decoration: InputDecoration(
+          hintText: 'Ketik perintah, mis. CAM_ON',
+          hintStyle: TextStyle(color: p.textDim, fontSize: 12),
+          isDense: true,
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 10, vertical: 11),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(8),
+            borderSide: BorderSide(color: p.border),
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(8),
+            borderSide: BorderSide(color: p.border),
           ),
         ),
-        const SizedBox(width: 6),
-        _btn(
-          label: 'Send',
-          icon: Icons.send,
-          color: p.accent,
-          enabled: svc.connected,
-          dense: true,
-          onTap: _sendCustom,
-        ),
-      ],
+      ),
     );
   }
 
