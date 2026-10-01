@@ -69,7 +69,12 @@ class _CommandPanelState extends State<CommandPanel> {
         ],
       ),
     );
-    if (ok == true) svc.send(d.name);
+    if (ok == true) {
+      // Panel tidak lagi punya tombol ARM, jadi arm otomatis setelah user
+      // mengonfirmasi (CommandService menolak perintah kritis saat SAFE).
+      if (!svc.armed) svc.arm();
+      svc.send(d.name);
+    }
   }
 
   /// Satu tombol Send: kirim isi kolom perintah.
