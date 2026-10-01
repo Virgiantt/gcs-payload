@@ -408,7 +408,7 @@ class _Model3DNativeViewState extends State<Model3DNativeView>
     _to = [
       t.roll,
       t.pitch,
-      cur[2] + _shortest(cur[2], t.yaw), // yaw lewat jalur terpendek
+      cur[2] + _shortest(cur[2], t.yaw),
     ];
     _anim.forward(from: 0);
   }

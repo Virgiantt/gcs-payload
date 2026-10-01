@@ -10,11 +10,6 @@ class _Def {
   const _Def(this.name, this.label, this.icon);
 }
 
-/// Panel perintah: ARM -> pilih perintah kritis (dropdown) -> konfirmasi
-/// -> kirim -> tunggu ACK.
-///
-/// Layout: Command Log (persegi panjang) di atas, lalu dropdown perintah
-/// kritis, lalu kolom perintah + tombol Send.
 class CommandPanel extends StatefulWidget {
   final AppPalette palette;
   final CommandService service;
@@ -34,7 +29,6 @@ class CommandPanel extends StatefulWidget {
 class _CommandPanelState extends State<CommandPanel> {
   final TextEditingController _ctrl = TextEditingController();
 
-  // Nama perintah harus sama dengan yang dikenali program di Raspberry Pi.
   static const List<_Def> _critical = [
     _Def('SEPARATE_1', 'Separate Stage 1', Icons.call_split),
     _Def('SEPARATE_2', 'Separate Stage 2', Icons.call_split),
@@ -70,15 +64,11 @@ class _CommandPanelState extends State<CommandPanel> {
       ),
     );
     if (ok == true) {
-      // Panel tidak lagi punya tombol ARM, jadi arm otomatis setelah user
-      // mengonfirmasi (CommandService menolak perintah kritis saat SAFE).
       if (!svc.armed) svc.arm();
       svc.send(d.name);
     }
   }
 
-  /// Satu tombol Send: kirim isi kolom perintah.
-  /// Jika isinya perintah kritis (dipilih dari dropdown) -> minta konfirmasi dulu.
   void _send() {
     final v = _ctrl.text.trim();
     if (v.isEmpty || !svc.connected) return;
