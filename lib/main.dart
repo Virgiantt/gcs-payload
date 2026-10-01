@@ -12,22 +12,19 @@ import 'package:window_manager/window_manager.dart';
 import 'models/telemetry.dart';
 import 'services/alert_service.dart';
 import 'services/command_service.dart';
-import 'services/health_service.dart';
-import 'services/preflight_service.dart';
 import 'services/system_monitor.dart';
 import 'services/telemetry_logger.dart';
 import 'services/telemetry_service.dart';
 import 'theme/app_theme.dart';
 import 'widgets/alert_bar.dart';
+import 'widgets/battery_panel.dart';
 import 'widgets/command_panel.dart';
 import 'widgets/connection_indicator.dart';
 import 'widgets/gps_panel.dart';
-import 'widgets/health_panel.dart';
 import 'widgets/live_chart.dart';
 import 'widgets/map_view.dart';
 import 'widgets/model_3d_glb.dart';
 import 'widgets/model_3d_native.dart';
-import 'widgets/preflight_panel.dart';
 import 'widgets/telemetry_log_table.dart';
 
 // =========================================================
@@ -36,6 +33,8 @@ import 'widgets/telemetry_log_table.dart';
 const int kCommandPort = 9998;
 // Nama command launch yang dikirim CommandPanel (sesuaikan kalau beda)
 const String kLaunchCmd = 'LAUNCH';
+// Simulasi packet loss (0.0 = tidak ada, 0.15 = 15% paket dibuang) untuk uji tampilan NA
+const double kSimPacketLossRate = 0.0;
 // Logo header (ganti path ini kalau lokasi file berbeda)
 const String kLogoAsset = 'assets/icons/assets1.jpeg';
 const String kSimTeamId = '1064';
@@ -201,6 +200,7 @@ class EmbeddedSimulator {
   Socket? _client;
   final FlightProfile _profile = FlightProfile();
   bool _running = false;
+  final math.Random _lossRng = math.Random();
 
   void Function(String msg)? onLog;
 
@@ -291,6 +291,9 @@ class EmbeddedSimulator {
     _log('[+] GCS Connected from ${s.remoteAddress.address}:${s.remotePort}');
     s.write(kSimCsvHeader);
     _profile.reset();
+    // Langsung launch begitu GCS terhubung (tanpa Pre-Flight)
+    _profile.launch();
+    _log('[LAUNCH] Auto launch saat GCS terhubung');
 
     s.listen(
       (_) {},
@@ -302,11 +305,16 @@ class EmbeddedSimulator {
     while (_running && _client == s) {
       try {
         final line = _profile.step();
-        s.write(line);
         final parts = line.split(',');
-        _log('[${parts[1]}] Pkt #${parts[2].padLeft(3, '0')} '
-            '| Alt: ${parts[3].padLeft(6)} m '
-            '| State: ${parts[13].trim().padRight(12)} -> Sent');
+        if (_lossRng.nextDouble() < kSimPacketLossRate) {
+          _log(
+              '[${parts[1]}] Pkt #${parts[2].padLeft(3, '0')} -> LOST (simulasi)');
+        } else {
+          s.write(line);
+          _log('[${parts[1]}] Pkt #${parts[2].padLeft(3, '0')} '
+              '| Alt: ${parts[3].padLeft(6)} m '
+              '| State: ${parts[13].trim().padRight(12)} -> Sent');
+        }
       } catch (_) {
         break;
       }
@@ -413,18 +421,11 @@ class _GcsHomeState extends State<GcsHome> {
   final SystemMonitor sysmon = SystemMonitor();
   final TelemetryLogger logger = TelemetryLogger();
   final AlertService alerts = AlertService();
-  late final HealthService health =
-      HealthService(inputs: _healthInputs, cmd: cmd);
   Timer? _alertTimer;
   int _lastTotal = -1;
   DateTime? _lastPacketAt;
   late final CommandService cmd = CommandService(
       host: service.host, port: kCommandPort, teamId: kSimTeamId);
-  // Pre-Flight Check: LAUNCH terkunci sampai semua item lulus
-  late final PreflightService preflight = PreflightService(
-    inputs: _healthInputs,
-    commandUp: () => cmd.connected,
-  );
   bool _isFullscreen = false;
   final List<String> _simLog = [];
 
@@ -444,10 +445,8 @@ class _GcsHomeState extends State<GcsHome> {
   }
 
   Future<void> _boot() async {
-    // Interlock: payload hanya boleh ascend jika Pre-Flight Check lolos.
-    simulator.canLaunch = () => preflight.launchAllowed;
-    // Setelah launch, check harus diulang untuk launch berikutnya.
-    simulator.onLaunched = () => preflight.reset();
+    // Pre-Flight Check dinonaktifkan sementara -> LAUNCH langsung diizinkan.
+    simulator.canLaunch = () => true;
 
     simulator.onLog = (msg) {
       debugPrint('[SIM] $msg');
@@ -483,16 +482,16 @@ class _GcsHomeState extends State<GcsHome> {
     if (mounted) setState(() {});
   }
 
-  HealthInputs _healthInputs() => HealthInputs(
-        latest: service.latest,
-        history: service.history,
-        lastPacketAt: _lastPacketAt,
-        linkUp: service.status == ConnectionStatus.connected,
-      );
+  /// true bila antena tidak menerima data (link putus / >3 dtk tanpa paket).
+  bool get _signalLost {
+    if (service.latest == null) return false;
+    if (service.status != ConnectionStatus.connected) return true;
+    final at = _lastPacketAt;
+    return at != null &&
+        DateTime.now().difference(at) > const Duration(seconds: 3);
+  }
 
   void _runAlerts() {
-    health.refresh();
-    preflight.refresh();
     alerts.update(
       latest: service.latest,
       history: service.history,
@@ -503,23 +502,9 @@ class _GcsHomeState extends State<GcsHome> {
     );
   }
 
-  /// Dipanggil dari tombol LAUNCH di tab Pre-Flight.
-  void _onLaunch() {
-    final ok = simulator.requestLaunch();
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(ok
-            ? 'LAUNCH — payload ascend'
-            : 'LAUNCH BLOCKED — pre-flight check belum lolos'),
-      ),
-    );
-  }
-
   @override
   void dispose() {
     _alertTimer?.cancel();
-    health.dispose();
-    preflight.dispose();
     service.removeListener(_onServiceUpdate);
     service.dispose();
     simulator.stop();
@@ -763,7 +748,7 @@ class _GcsHomeState extends State<GcsHome> {
   // =========================================================
   Widget _buildTabView() {
     return DefaultTabController(
-      length: 5,
+      length: 4,
       child: Container(
         margin: const EdgeInsets.all(14),
         decoration: BoxDecoration(
@@ -784,16 +769,6 @@ class _GcsHomeState extends State<GcsHome> {
                   iconMargin: EdgeInsets.only(bottom: 2),
                 ),
                 Tab(
-                  icon: Icon(Icons.health_and_safety_outlined, size: 16),
-                  text: 'Payload Health',
-                  iconMargin: EdgeInsets.only(bottom: 2),
-                ),
-                Tab(
-                  icon: Icon(Icons.checklist_rtl, size: 16),
-                  text: 'Pre-Flight',
-                  iconMargin: EdgeInsets.only(bottom: 2),
-                ),
-                Tab(
                   icon: Icon(Icons.map_outlined, size: 16),
                   text: 'Maps',
                   iconMargin: EdgeInsets.only(bottom: 2),
@@ -803,6 +778,11 @@ class _GcsHomeState extends State<GcsHome> {
                   text: '3D Model',
                   iconMargin: EdgeInsets.only(bottom: 2),
                 ),
+                Tab(
+                  icon: Icon(Icons.battery_charging_full, size: 16),
+                  text: 'Battery',
+                  iconMargin: EdgeInsets.only(bottom: 2),
+                ),
               ],
             ),
             Expanded(
@@ -810,14 +790,14 @@ class _GcsHomeState extends State<GcsHome> {
                 physics: const NeverScrollableScrollPhysics(),
                 children: [
                   _buildDashboardTab(),
-                  _buildHealthTab(),
-                  PreflightPanel(
-                    palette: palette,
-                    service: preflight,
-                    onLaunch: _onLaunch,
-                  ),
                   _buildMapCameraTab(),
                   _build3DTab(),
+                  BatteryPanel(
+                    palette: palette,
+                    latest: service.latest,
+                    history: service.history,
+                    signalLost: _signalLost,
+                  ),
                 ],
               ),
             ),
@@ -904,6 +884,7 @@ class _GcsHomeState extends State<GcsHome> {
               palette: palette,
               history: history,
               maxRows: 5,
+              signalLost: _signalLost,
             ),
           ),
           const SizedBox(height: 12),
@@ -973,8 +954,9 @@ class _GcsHomeState extends State<GcsHome> {
   }
 
   Widget _buildHeroStatus(Telemetry? t) {
+    final lost = _signalLost;
     Color stateColor;
-    switch (t?.state ?? '') {
+    switch (lost ? '' : (t?.state ?? '')) {
       case 'LAUNCH_PAD':
         stateColor = palette.textDim;
         break;
@@ -1000,13 +982,18 @@ class _GcsHomeState extends State<GcsHome> {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(
-              label,
-              style: TextStyle(
-                color: palette.textDim,
-                fontSize: 9,
-                fontWeight: FontWeight.w700,
-                letterSpacing: 1.2,
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: Text(
+                label,
+                maxLines: 1,
+                style: TextStyle(
+                  color: palette.textDim,
+                  fontSize: 9,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 1.2,
+                ),
               ),
             ),
             const SizedBox(height: 4),
@@ -1045,6 +1032,59 @@ class _GcsHomeState extends State<GcsHome> {
       );
     }
 
+    // Indikator fase penerbangan: PAD -> ASCENT -> APOGEE -> DESCENT -> LANDED
+    Widget phaseBar() {
+      const phases = ['LAUNCH_PAD', 'ASCENT', 'APOGEE', 'DESCENT', 'LANDED'];
+      const names = ['PAD', 'ASCENT', 'APOGEE', 'DESCENT', 'LANDED'];
+      final cur = lost ? -1 : phases.indexOf(t?.state ?? '');
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              for (var i = 0; i < phases.length; i++)
+                Expanded(
+                  child: Container(
+                    height: 5,
+                    margin:
+                        EdgeInsets.only(right: i < phases.length - 1 ? 4 : 0),
+                    decoration: BoxDecoration(
+                      color:
+                          i <= cur ? stateColor : stateColor.withOpacity(0.18),
+                      borderRadius: BorderRadius.circular(3),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              for (var i = 0; i < phases.length; i++)
+                Expanded(
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      names[i],
+                      maxLines: 1,
+                      style: TextStyle(
+                        color: i == cur ? stateColor : palette.textDim,
+                        fontSize: 8,
+                        fontWeight:
+                            i == cur ? FontWeight.w800 : FontWeight.w600,
+                        letterSpacing: 0.6,
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ],
+      );
+    }
+
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -1073,7 +1113,8 @@ class _GcsHomeState extends State<GcsHome> {
                   color: stateColor.withOpacity(0.2),
                   shape: BoxShape.circle,
                 ),
-                child: Icon(_stateIcon(t?.state), color: stateColor, size: 24),
+                child: Icon(_stateIcon(lost ? null : t?.state),
+                    color: stateColor, size: 24),
               ),
               const SizedBox(width: 12),
               Expanded(
@@ -1095,7 +1136,7 @@ class _GcsHomeState extends State<GcsHome> {
                       fit: BoxFit.scaleDown,
                       alignment: Alignment.centerLeft,
                       child: Text(
-                        t?.state ?? 'WAITING',
+                        lost ? 'NA' : (t?.state ?? 'WAITING'),
                         style: TextStyle(
                           color: stateColor,
                           fontSize: 24,
@@ -1109,21 +1150,29 @@ class _GcsHomeState extends State<GcsHome> {
               ),
             ],
           ),
+          phaseBar(),
           Divider(height: 1, color: stateColor.withOpacity(0.25)),
           // Statistik
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              stat('ALTITUDE', t == null ? '—' : t.altitude.toStringAsFixed(1),
-                  unit: 'm'),
+              stat(
+                  'ALTITUDE',
+                  lost
+                      ? 'NA'
+                      : (t == null ? '—' : t.altitude.toStringAsFixed(1)),
+                  unit: lost ? null : 'm'),
               const SizedBox(width: 6),
-              stat('MISSION TIME', t?.missionTime ?? '--:--:--'),
+              stat(
+                  'MISSION TIME', lost ? 'NA' : (t?.missionTime ?? '--:--:--')),
               const SizedBox(width: 6),
               stat(
                   'PACKET',
-                  t == null
-                      ? '—'
-                      : '#${t.packetCount.toString().padLeft(4, '0')}'),
+                  lost
+                      ? 'NA'
+                      : (t == null
+                          ? '—'
+                          : '#${t.packetCount.toString().padLeft(4, '0')}')),
             ],
           ),
         ],
@@ -1161,13 +1210,6 @@ class _GcsHomeState extends State<GcsHome> {
         ),
       ),
     );
-  }
-
-  // =========================================================
-  // TAB 2: PAYLOAD HEALTH
-  // =========================================================
-  Widget _buildHealthTab() {
-    return HealthPanel(palette: palette, service: health);
   }
 
   // =========================================================

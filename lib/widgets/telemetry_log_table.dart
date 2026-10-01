@@ -3,17 +3,31 @@ import 'package:flutter/material.dart';
 import '../models/telemetry.dart';
 import '../theme/app_theme.dart';
 
+enum _Kind { normal, latest, lost }
+
+class _R {
+  final List<String> cells;
+  final _Kind kind;
+  const _R(this.cells, this.kind);
+}
+
 class TelemetryLogTable extends StatelessWidget {
   final AppPalette palette;
-  final List<Telemetry> history; 
+  final List<Telemetry> history;
   final int maxRows;
+
+  /// true -> antena tidak menerima data: baris paling atas diisi NA.
+  final bool signalLost;
 
   const TelemetryLogTable({
     super.key,
     required this.palette,
     required this.history,
     this.maxRows = 10,
+    this.signalLost = false,
   });
+
+  static const String _na = 'NA';
 
   // (judul, flex, rata kanan?)
   static const List<_Col> _cols = [
@@ -50,10 +64,54 @@ class TelemetryLogTable extends StatelessWidget {
         t.gpsAlt.toStringAsFixed(1),
       ];
 
+  /// Baris data kosong: semua kolom NA (nomor paket diisi kalau diketahui).
+  List<String> _naCells(String teamId, String packet) => [
+        teamId,
+        packet,
+        for (var i = 2; i < _cols.length; i++) _na,
+      ];
+
+  /// Susun baris: paket yang hilang (nomor loncat) disisipkan sebagai NA,
+  /// lalu kalau sinyal putus ditambah satu baris NA di paling atas.
+  List<_R> _buildRows() {
+    final src =
+        history.length > 200 ? history.sublist(history.length - 200) : history;
+
+    final chrono = <_R>[];
+    Telemetry? prev;
+    for (final t in src) {
+      if (prev != null) {
+        final gap = t.packetCount - prev.packetCount - 1;
+        if (gap > 0) {
+          final n = gap > 20 ? 20 : gap; // batasi supaya tabel tidak banjir
+          for (var k = 1; k <= n; k++) {
+            chrono.add(_R(
+              _naCells('${t.teamId}', '${prev.packetCount + k}'),
+              _Kind.lost,
+            ));
+          }
+        }
+      }
+      chrono.add(_R(_cells(t), _Kind.normal));
+      prev = t;
+    }
+
+    final rows = chrono.reversed.toList();
+
+    if (signalLost && history.isNotEmpty) {
+      rows.insert(0, _R(_naCells('${history.last.teamId}', _na), _Kind.lost));
+    } else {
+      // baris data asli paling atas = latest
+      final i = rows.indexWhere((r) => r.kind == _Kind.normal);
+      if (i == 0) rows[0] = _R(rows[0].cells, _Kind.latest);
+    }
+    return rows.take(maxRows).toList();
+  }
+
   @override
   Widget build(BuildContext context) {
     final p = palette;
-    final rows = history.reversed.take(maxRows).toList();
+    final rows = _buildRows();
 
     return Container(
       decoration: BoxDecoration(
@@ -99,6 +157,7 @@ class TelemetryLogTable extends StatelessWidget {
                       children: [
                         _row(
                           _cols.map((e) => e.title).toList(),
+                          kind: _Kind.normal,
                           header: true,
                         ),
                         Expanded(
@@ -114,8 +173,8 @@ class TelemetryLogTable extends StatelessWidget {
                                   child: Column(
                                     children: [
                                       for (var i = 0; i < rows.length; i++)
-                                        _row(_cells(rows[i]),
-                                            index: i, latest: i == 0),
+                                        _row(rows[i].cells,
+                                            kind: rows[i].kind, index: i),
                                     ],
                                   ),
                                 ),
@@ -134,16 +193,23 @@ class TelemetryLogTable extends StatelessWidget {
 
   Widget _row(
     List<String> cells, {
+    required _Kind kind,
     bool header = false,
     int index = 0,
-    bool latest = false,
   }) {
     final p = palette;
+    final latest = kind == _Kind.latest;
+    final lost = kind == _Kind.lost;
+
     final Color bg = header
         ? p.panelAlt
-        : latest
-            ? p.accent.withOpacity(0.10)
-            : (index.isOdd ? p.panelAlt.withOpacity(0.5) : Colors.transparent);
+        : lost
+            ? p.bad.withOpacity(0.08)
+            : latest
+                ? p.accent.withOpacity(0.10)
+                : (index.isOdd
+                    ? p.panelAlt.withOpacity(0.5)
+                    : Colors.transparent);
 
     return Container(
       height: header ? 38 : 36,
@@ -160,14 +226,15 @@ class TelemetryLogTable extends StatelessWidget {
                   cells[i],
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  textAlign:
-                      _cols[i].right ? TextAlign.right : TextAlign.left,
+                  textAlign: _cols[i].right ? TextAlign.right : TextAlign.left,
                   style: TextStyle(
                     color: header
                         ? p.textDim
-                        : (latest ? p.accent : p.text),
+                        : lost
+                            ? p.bad
+                            : (latest ? p.accent : p.text),
                     fontSize: header ? 11 : 12,
-                    fontWeight: header || latest
+                    fontWeight: header || latest || lost
                         ? FontWeight.w700
                         : FontWeight.w500,
                   ),
