@@ -825,14 +825,14 @@ class _GcsHomeState extends State<GcsHome> {
         children: [
           // Baris 1: 4 kotak sejajar
           SizedBox(
-            height: 320,
+            height: 380,
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 Expanded(flex: 3, child: _buildHeroStatus(t)),
                 const SizedBox(width: 12),
                 Expanded(
-                  flex: 5,
+                  flex: 6,
                   child: CommandPanel(
                     palette: palette,
                     service: cmd,

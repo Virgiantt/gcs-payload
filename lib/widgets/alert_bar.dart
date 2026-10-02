@@ -3,8 +3,6 @@ import 'package:flutter/material.dart';
 import '../services/alert_service.dart';
 import '../theme/app_theme.dart';
 
-/// Bar status alert: [NORMAL / WARNING / CRITICAL] + chip tiap alert aktif.
-/// Tinggi tetap (tidak bergeser saat alert muncul/hilang).
 class AlertBar extends StatefulWidget {
   final AppPalette palette;
   final AlertService service;
