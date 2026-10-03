@@ -28,14 +28,24 @@ import 'widgets/model_3d_native.dart';
 import 'widgets/telemetry_log_table.dart';
 
 // =========================================================
-// KONFIGURASI SIMULATOR (embedded)
+// KONFIGURASI — GANTI DI SINI
 // =========================================================
+
+// false = pakai receiver LoRa sungguhan (rx.py di ESP32)
+// true  = pakai simulator embedded (data palsu)
+const bool kUseEmbeddedSimulator = false;
+
+// IP receiver ESP32 (rx.py mencetak: "[GCS] Set kReceiverHost di main.dart ke: ...")
+const String kReceiverHost = '192.168.43.201';
+const int kTelemetryPort = 9999; // = TCP_PORT di rx.py
+
+// HARUS sama dengan AUTH_TOKEN di rx.py. Dikirim otomatis saat connect.
+const String kAuthToken = 'eepisat-gcs-2026';
+
 const int kCommandPort = 9998;
-// Nama command launch yang dikirim CommandPanel (sesuaikan kalau beda)
+
 const String kLaunchCmd = 'LAUNCH';
-// Simulasi packet loss (0.0 = tidak ada, 0.15 = 15% paket dibuang) untuk uji tampilan NA
 const double kSimPacketLossRate = 0.0;
-// Logo header (ganti path ini kalau lokasi file berbeda)
 const String kLogoAsset = 'assets/icons/assets1.jpeg';
 const String kSimTeamId = '1064';
 const double kSimBaseLat = -7.275764;
@@ -57,8 +67,6 @@ bool get _isDesktopPlatform {
   return false;
 }
 
-// flutter_inappwebview tidak punya implementasi Linux (termasuk flutter-pi),
-// jadi InAppWebView melempar "Null check operator used on a null value".
 bool get _webViewSupported {
   if (kIsWeb) return true;
   return Platform.isAndroid ||
@@ -68,14 +76,13 @@ bool get _webViewSupported {
 }
 
 // =========================================================
-// FLIGHT PROFILE (Dart port dari cansat_simulator.py)
+// FLIGHT PROFILE (untuk simulator embedded — mode dev)
 // =========================================================
 class FlightProfile {
   final math.Random _rng = math.Random();
   late DateTime _start;
   int packetCount = 0;
 
-  /// Payload TIDAK akan naik (ascend) sebelum launch() dipanggil.
   bool launched = false;
   DateTime? _launchAt;
 
@@ -95,7 +102,6 @@ class FlightProfile {
     _launchAt = DateTime.now();
   }
 
-  /// true selama fase ASCENT..DESCENT (belum mendarat)
   bool get inFlight =>
       launched &&
       _launchAt != null &&
@@ -105,9 +111,6 @@ class FlightProfile {
   String step() {
     packetCount++;
     final elapsed = DateTime.now().difference(_start).inMilliseconds / 1000.0;
-    // Belum launch -> tetap di LAUNCH_PAD (cycleTime 0).
-    // Sudah launch -> mulai dari awal fase ASCENT (10 dtk), lalu berjalan
-    // sampai LANDED dan berhenti di sana (tidak looping otomatis).
     final cycleTime = (!launched || _launchAt == null)
         ? 0.0
         : 10.0 + DateTime.now().difference(_launchAt!).inMilliseconds / 1000.0;
@@ -156,7 +159,6 @@ class FlightProfile {
     final volt =
         _r(4.20 - (math.min(elapsed, 110.0) * 0.002) + _u(-0.02, 0.02), 2);
 
-    // GPS bergerak dalam pola melingkar — terlihat di map
     final driftFactor = math.min(cycleTime / 90.0, 1.0) * 0.02;
     final angle = elapsed * 0.35;
     final gpsLat = _r(
@@ -187,7 +189,7 @@ class FlightProfile {
 }
 
 // =========================================================
-// EMBEDDED TCP SIMULATOR
+// EMBEDDED TCP SIMULATOR (mode dev)
 // =========================================================
 class EmbeddedSimulator {
   final String host;
@@ -203,14 +205,9 @@ class EmbeddedSimulator {
   final math.Random _lossRng = math.Random();
 
   void Function(String msg)? onLog;
-
-  /// Interlock: dipasang GCS -> true jika Pre-Flight Check sudah lolos.
   bool Function()? canLaunch;
-
-  /// Dipanggil setelah launch berhasil (GCS memakainya untuk reset preflight).
   void Function()? onLaunched;
 
-  /// Coba launch. Ditolak jika preflight belum lolos atau sedang terbang.
   bool requestLaunch() {
     if (_profile.inFlight) {
       _log('[LAUNCH] Ditolak: payload sedang terbang');
@@ -237,7 +234,6 @@ class EmbeddedSimulator {
     _log('================================================');
     _server!.listen(_onClient);
 
-    // Server perintah (menerima CMD dari GCS, membalas ACK)
     try {
       _cmdServer = await ServerSocket.bind(host, kCommandPort);
       _cmdServer!.listen(_onCmdClient);
@@ -256,7 +252,6 @@ class EmbeddedSimulator {
         .listen(
       (line) {
         final p = line.trim().split(',');
-        // CMD,<team>,<id>,<NAMA>
         if (p.length >= 4 && p[0] == 'CMD') {
           final id = p[2];
           final name = p[3];
@@ -291,7 +286,6 @@ class EmbeddedSimulator {
     _log('[+] GCS Connected from ${s.remoteAddress.address}:${s.remotePort}');
     s.write(kSimCsvHeader);
     _profile.reset();
-    // Langsung launch begitu GCS terhubung (tanpa Pre-Flight)
     _profile.launch();
     _log('[LAUNCH] Auto launch saat GCS terhubung');
 
@@ -355,8 +349,6 @@ ThemeData _buildTheme(AppPalette p) {
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Tampilkan error ASLI. Tanpa ini Flutter mem-throttle log menjadi
-  // "Another exception was thrown: Instance of 'DiagnosticsProperty<void>'".
   FlutterError.onError = (details) {
     debugPrint('[FLUTTER-ERR] ${details.exceptionAsString()}');
     final st = details.stack;
@@ -383,7 +375,6 @@ void main() async {
 
   runApp(const GcsApp());
 
-  // Maximize SETELAH frame pertama tergambar (hindari jendela putih di Windows)
   if (_isDesktopPlatform) {
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       await Future.delayed(const Duration(milliseconds: 300));
@@ -416,7 +407,15 @@ class GcsHome extends StatefulWidget {
 class _GcsHomeState extends State<GcsHome> {
   AppPalette palette = AppPalette.light;
   late ThemeData _theme = _buildTheme(palette);
-  final TelemetryService service = TelemetryService();
+
+  // ---- TelemetryService: host + AUTH disesuaikan mode ----
+  // Mode LoRa: receiver rx.py menuntut "AUTH <token>" dalam 3 detik.
+  late final TelemetryService service = TelemetryService(
+    host: kUseEmbeddedSimulator ? '127.0.0.1' : kReceiverHost,
+    port: kTelemetryPort,
+    authToken: kUseEmbeddedSimulator ? null : kAuthToken,
+  );
+
   final EmbeddedSimulator simulator = EmbeddedSimulator();
   final SystemMonitor sysmon = SystemMonitor();
   final TelemetryLogger logger = TelemetryLogger();
@@ -424,8 +423,10 @@ class _GcsHomeState extends State<GcsHome> {
   Timer? _alertTimer;
   int _lastTotal = -1;
   DateTime? _lastPacketAt;
+
   late final CommandService cmd = CommandService(
       host: service.host, port: kCommandPort, teamId: kSimTeamId);
+
   bool _isFullscreen = false;
   final List<String> _simLog = [];
 
@@ -434,46 +435,68 @@ class _GcsHomeState extends State<GcsHome> {
     super.initState();
     service.addListener(_onServiceUpdate);
     sysmon.start();
-    // Evaluasi alert tiap 1 detik (supaya 'telemetry delay' terus naik
-    // walaupun tidak ada paket masuk).
+
     _alertTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted) return;
       _runAlerts();
       setState(() {});
     });
+
     _boot();
   }
 
   Future<void> _boot() async {
-    // Pre-Flight Check dinonaktifkan sementara -> LAUNCH langsung diizinkan.
-    simulator.canLaunch = () => true;
+    if (kUseEmbeddedSimulator) {
+      // ============= MODE SIMULATOR =============
+      debugPrint('[GCS] Mode SIMULATOR (embedded)');
+      simulator.canLaunch = () => true;
+      simulator.onLog = (msg) {
+        debugPrint('[SIM] $msg');
+        if (mounted) {
+          setState(() {
+            _simLog.add(msg);
+            if (_simLog.length > 100) _simLog.removeAt(0);
+          });
+        }
+      };
 
-    simulator.onLog = (msg) {
-      debugPrint('[SIM] $msg');
-      if (mounted) {
-        setState(() {
-          _simLog.add(msg);
-          if (_simLog.length > 100) _simLog.removeAt(0);
-        });
+      try {
+        await simulator.start();
+      } catch (e) {
+        debugPrint('[SIM] Gagal start: $e');
       }
-    };
 
-    try {
-      await simulator.start();
-    } catch (e) {
-      debugPrint('[SIM] Gagal start: $e');
+      await Future.delayed(const Duration(milliseconds: 500));
+      service.connect();
+      cmd.start();
+    } else {
+      // ============= MODE LORA (hardware) =============
+      debugPrint('[GCS] Mode LORA — receiver $kReceiverHost:$kTelemetryPort');
+
+      // Log koneksi, AUTH, dan tiap paket -> panel "LoRa LOG" (tab Maps).
+      // Yang terbaru di atas.
+      service.onLog = (msg) {
+        if (!mounted) return;
+        final n = DateTime.now();
+        String two(int v) => v.toString().padLeft(2, '0');
+        setState(() {
+          _simLog.insert(
+              0, '[${two(n.hour)}:${two(n.minute)}:${two(n.second)}] $msg');
+          if (_simLog.length > 100) _simLog.removeLast();
+        });
+      };
+
+      // Receiver belum punya jalur command -> cmd.start() di-skip.
+      await Future.delayed(const Duration(milliseconds: 300));
+      service.connect();
+      // cmd.start();   // ← uncomment kalau receiver sudah support command
     }
-
-    await Future.delayed(const Duration(milliseconds: 500));
-    service.connect();
-    cmd.start();
   }
 
   void _onServiceUpdate() {
     final t = service.latest;
-    if (t != null) logger.log(t); // simpan setiap paket ke CSV
+    if (t != null) logger.log(t);
 
-    // catat waktu paket terakhir diterima (untuk alert TELEMETRY DELAY)
     if (service.totalReceived > 0 && service.totalReceived != _lastTotal) {
       _lastTotal = service.totalReceived;
       _lastPacketAt = DateTime.now();
@@ -482,7 +505,6 @@ class _GcsHomeState extends State<GcsHome> {
     if (mounted) setState(() {});
   }
 
-  /// true bila antena tidak menerima data (link putus / >3 dtk tanpa paket).
   bool get _signalLost {
     if (service.latest == null) return false;
     if (service.status != ConnectionStatus.connected) return true;
@@ -497,7 +519,8 @@ class _GcsHomeState extends State<GcsHome> {
       history: service.history,
       lastPacketAt: _lastPacketAt,
       telemetryLinkUp: service.status == ConnectionStatus.connected,
-      commandLinkUp: cmd.connected,
+      // Mode LoRa: jalur command memang belum dipakai, jangan dianggap putus.
+      commandLinkUp: kUseEmbeddedSimulator ? cmd.connected : true,
       now: DateTime.now(),
     );
   }
@@ -507,7 +530,7 @@ class _GcsHomeState extends State<GcsHome> {
     _alertTimer?.cancel();
     service.removeListener(_onServiceUpdate);
     service.dispose();
-    simulator.stop();
+    if (kUseEmbeddedSimulator) simulator.stop();
     sysmon.dispose();
     cmd.dispose();
     super.dispose();
@@ -536,7 +559,6 @@ class _GcsHomeState extends State<GcsHome> {
         backgroundColor: palette.bg,
         body: Stack(
           children: [
-            // Watermark Indonesia
             Positioned(
               right: -80,
               bottom: -80,
@@ -551,7 +573,6 @@ class _GcsHomeState extends State<GcsHome> {
                 ),
               ),
             ),
-            // Konten utama
             Column(
               children: [
                 _buildHeader(),
@@ -580,7 +601,6 @@ class _GcsHomeState extends State<GcsHome> {
       ),
       child: Row(
         children: [
-          // Logo CanSat
           Container(
             width: 46,
             height: 46,
@@ -602,8 +622,6 @@ class _GcsHomeState extends State<GcsHome> {
             ),
           ),
           const SizedBox(width: 14),
-
-          // Title + Subtitle + PENS kecil
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisAlignment: MainAxisAlignment.center,
@@ -620,7 +638,8 @@ class _GcsHomeState extends State<GcsHome> {
               Row(
                 children: [
                   Text(
-                    'Team 1064  ·  Target ${service.host}:${service.port}',
+                    // Team ID diambil dari paket yang diterima (mis. EEPISAT)
+                    'Team ${service.latest?.teamId ?? kSimTeamId}  ·  Target ${service.host}:${service.port}',
                     style: TextStyle(color: palette.textDim, fontSize: 11),
                   ),
                 ],
@@ -628,22 +647,16 @@ class _GcsHomeState extends State<GcsHome> {
             ],
           ),
           const Spacer(),
-
-          // Connection Indicator
           ConnectionIndicator(palette: palette, status: service.status),
           const SizedBox(width: 16),
           Container(width: 1, height: 32, color: palette.border),
           const SizedBox(width: 16),
-
-          // EEPISAT
           _brandLogo(
             asset: 'assets/icons/eepisat.png',
             tooltip: 'EEPISAT',
             height: 32,
           ),
           const SizedBox(width: 12),
-
-          // Indonesia
           _brandLogo(
             asset: 'assets/icons/indonesia.png',
             tooltip: 'Indonesia',
@@ -653,8 +666,6 @@ class _GcsHomeState extends State<GcsHome> {
           const SizedBox(width: 16),
           Container(width: 1, height: 32, color: palette.border),
           const SizedBox(width: 16),
-
-          // Tombol
           _headerButton(
             icon: palette.name == 'dark' ? Icons.light_mode : Icons.dark_mode,
             label: palette.name == 'dark' ? 'Light' : 'Dark',
@@ -809,10 +820,6 @@ class _GcsHomeState extends State<GcsHome> {
 
   // =========================================================
   // TAB 1: DASHBOARD
-  //   Baris 1: Flight State | Command Center | Maps | 3D Model
-  //   Baris 2: Live charts (4 grafik sejajar)
-  //   Baris 3: Telemetry table selebar layar
-  //   Baris 4: Status simpan CSV
   // =========================================================
   Widget _buildDashboardTab() {
     final t = service.latest;
@@ -823,7 +830,6 @@ class _GcsHomeState extends State<GcsHome> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // Baris 1: 4 kotak sejajar
           SizedBox(
             height: 380,
             child: Row(
@@ -869,15 +875,11 @@ class _GcsHomeState extends State<GcsHome> {
             ),
           ),
           const SizedBox(height: 12),
-
-          // Baris 2: Live charts
           SizedBox(
             height: 230,
             child: _liveCharts(),
           ),
           const SizedBox(height: 12),
-
-          // Baris 3: Telemetry table
           SizedBox(
             height: 300,
             child: TelemetryLogTable(
@@ -888,18 +890,14 @@ class _GcsHomeState extends State<GcsHome> {
             ),
           ),
           const SizedBox(height: 12),
-
-          // Baris 4: status penyimpanan CSV
           _buildLogBar(),
         ],
       ),
     );
   }
 
-  /// 4 grafik live sejajar untuk Dashboard.
   Widget _liveCharts() {
     final h = service.history;
-    // Nomor sampel absolut (terus naik) -> label sumbu X ikut bergeser
     final offset = service.totalReceived - h.length;
 
     List<FlSpot> spots(double Function(Telemetry) sel) => List.generate(
@@ -1032,7 +1030,6 @@ class _GcsHomeState extends State<GcsHome> {
       );
     }
 
-    // Indikator fase penerbangan: PAD -> ASCENT -> APOGEE -> DESCENT -> LANDED
     Widget phaseBar() {
       const phases = ['LAUNCH_PAD', 'ASCENT', 'APOGEE', 'DESCENT', 'LANDED'];
       const names = ['PAD', 'ASCENT', 'APOGEE', 'DESCENT', 'LANDED'];
@@ -1103,7 +1100,6 @@ class _GcsHomeState extends State<GcsHome> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          // Ikon + flight state
           Row(
             children: [
               Container(
@@ -1152,7 +1148,6 @@ class _GcsHomeState extends State<GcsHome> {
           ),
           phaseBar(),
           Divider(height: 1, color: stateColor.withOpacity(0.25)),
-          // Statistik
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -1213,7 +1208,7 @@ class _GcsHomeState extends State<GcsHome> {
   }
 
   // =========================================================
-  // TAB 4: MAPS
+  // TAB 2: MAPS
   // =========================================================
   Widget _buildMapCameraTab() {
     return Padding(
@@ -1247,7 +1242,7 @@ class _GcsHomeState extends State<GcsHome> {
                   child: GpsPanel(palette: palette, data: service.latest),
                 ),
                 const SizedBox(height: 12),
-                _section('SIMULATOR LOG'),
+                _section(kUseEmbeddedSimulator ? 'SIMULATOR LOG' : 'LoRa LOG'),
                 Expanded(child: _buildSimLog()),
               ],
             ),
@@ -1265,29 +1260,38 @@ class _GcsHomeState extends State<GcsHome> {
         borderRadius: BorderRadius.circular(12),
       ),
       clipBehavior: Clip.hardEdge,
-      child: ListView.builder(
-        padding: const EdgeInsets.all(10),
-        itemCount: _simLog.length,
-        itemBuilder: (_, i) {
-          final line = _simLog[i];
-          return Padding(
-            padding: const EdgeInsets.symmetric(vertical: 2),
-            child: SelectableText(
-              line,
-              style: TextStyle(
-                color: palette.textDim,
-                fontSize: 10,
-                fontFamily: 'monospace',
+      child: _simLog.isEmpty
+          ? Center(
+              child: Text(
+                kUseEmbeddedSimulator
+                    ? 'Menunggu simulator...'
+                    : 'Menunggu data LoRa...',
+                style: TextStyle(color: palette.textDim, fontSize: 11),
               ),
+            )
+          : ListView.builder(
+              padding: const EdgeInsets.all(10),
+              itemCount: _simLog.length,
+              itemBuilder: (_, i) {
+                final line = _simLog[i];
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 2),
+                  child: SelectableText(
+                    line,
+                    style: TextStyle(
+                      color: palette.textDim,
+                      fontSize: 10,
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+                );
+              },
             ),
-          );
-        },
-      ),
     );
   }
 
   // =========================================================
-  // TAB 5: 3D MODEL (dari payload.glb)
+  // TAB 3: 3D MODEL
   // =========================================================
   Widget _build3DTab() {
     return Padding(
@@ -1303,7 +1307,6 @@ class _GcsHomeState extends State<GcsHome> {
                 Expanded(
                   child: _webViewSupported
                       ? Model3DGlbView(
-                          // key tetap supaya WebView tidak dibuat ulang
                           key: const ValueKey('payload3d'),
                           palette: palette,
                           data: service.latest,
@@ -1469,7 +1472,9 @@ class _GcsHomeState extends State<GcsHome> {
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              '${service.statusMessage}  ·  Simulator port ${simulator.port}',
+              kUseEmbeddedSimulator
+                  ? '${service.statusMessage}  ·  Simulator port ${simulator.port}'
+                  : '${service.statusMessage}  ·  LoRa receiver ${service.host}:${service.port}',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(color: palette.textDim, fontSize: 11),
@@ -1499,9 +1504,6 @@ class _GcsHomeState extends State<GcsHome> {
     );
   }
 
-  // =========================================================
-  // INFO SISTEM (CPU / RAM / dll) di footer
-  // =========================================================
   Widget _buildSysStats() {
     return ListenableBuilder(
       listenable: sysmon,

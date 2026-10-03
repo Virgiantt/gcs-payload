@@ -19,10 +19,6 @@ class CmdLogEntry {
       {this.state = CmdState.sent, this.detail = ''});
 }
 
-/// Channel perintah GCS -> payload / Raspberry Pi (TCP, terpisah dari telemetri).
-///
-/// Format kirim : CMD,<team>,<id>,<NAMA>\r\n
-/// Balasan      : ACK,<id>,<NAMA>\r\n   atau   NACK,<id>,<NAMA>,<alasan>\r\n
 class CommandService extends ChangeNotifier {
   final String host;
   final int port;
@@ -30,7 +26,6 @@ class CommandService extends ChangeNotifier {
 
   CommandService({required this.host, this.port = 9998, this.teamId = '1064'});
 
-  /// Perintah kritis: hanya boleh dikirim saat ARMED.
   static const Set<String> criticalNames = {
     'SEPARATE_1',
     'SEPARATE_2',
@@ -100,7 +95,7 @@ class CommandService extends ChangeNotifier {
     _socket?.destroy();
     _socket = null;
     status = CmdChannelStatus.disconnected;
-    disarm(); // link putus -> langsung disarm
+    disarm();
     _notify();
   }
 
@@ -149,7 +144,6 @@ class CommandService extends ChangeNotifier {
 
   // ---------------- kirim perintah ----------------
   void send(String rawName) {
-    // hanya A-Z 0-9 _ (cegah karakter , dan newline masuk ke protokol)
     final name =
         rawName.trim().toUpperCase().replaceAll(RegExp(r'[^A-Z0-9_]'), '_');
     if (name.isEmpty) return;
