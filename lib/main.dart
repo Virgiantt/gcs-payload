@@ -522,6 +522,8 @@ class _GcsHomeState extends State<GcsHome> {
       // Mode LoRa: jalur command memang belum dipakai, jangan dianggap putus.
       commandLinkUp: kUseEmbeddedSimulator ? cmd.connected : true,
       now: DateTime.now(),
+      telemetryTarget: '${service.host}:${service.port}',
+      telemetryStatus: service.statusMessage,
     );
   }
 
