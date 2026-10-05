@@ -56,8 +56,6 @@ class AlertEvent {
       {this.cleared = false});
 }
 
-/// Satu "kejadian" utuh: dari alert muncul sampai pulih.
-/// Inilah yang ditampilkan di Alert log (status ACTIVE / RESOLVED, durasi, dst).
 class AlertIncident {
   final String id;
   final AlertSource source;
@@ -95,13 +93,10 @@ class AlertIncident {
 class AlertThresholds {
   const AlertThresholds._();
 
-  // --- Baterai: jumlah sel dideteksi otomatis dari tegangan ---
-  // (<= 4.25 V = 1S, <= 8.5 V = 2S, dst). Ambang dihitung PER SEL.
   static const double cellWarn = 3.60;
   static const double cellCrit = 3.40;
   static const double cellMax = 4.25;
 
-  /// Ambang lama (1S). Dipertahankan karena mungkin dipakai widget lain.
   static const double battWarn = 3.70;
   static const double battCrit = 3.50;
 

@@ -9,8 +9,6 @@ class LiveChart extends StatelessWidget {
   final List<FlSpot> spots;
   final Color lineColor;
 
-  /// Jumlah titik maksimum yang ditampilkan. Data lebih lama tetap tersimpan
-  /// di CSV, hanya tidak digambar di chart.
   final int maxPoints;
 
   const LiveChart({
@@ -25,8 +23,6 @@ class LiveChart extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Jendela geser: ambil maxPoints data terbaru saja
-    // Buang titik NaN (sensor error) supaya batas sumbu & garis tidak rusak
     final finite = spots.where((s) => s.x.isFinite && s.y.isFinite).toList();
     final windowed = finite.length > maxPoints;
     final view = windowed ? finite.sublist(finite.length - maxPoints) : finite;
