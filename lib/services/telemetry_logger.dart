@@ -4,10 +4,14 @@ import 'package:flutter/foundation.dart';
 
 import '../models/telemetry.dart';
 
+/// Menyimpan SEMUA paket telemetri ke file CSV (satu file per sesi).
+/// Lokasi: <Documents>/CanSat_GCS_Logs/telemetry_YYYYMMDD_HHMMSS.csv
+/// Setiap baris langsung di-flush ke disk, jadi aman kalau aplikasi crash.
+/// Nilai NaN / sensor error ditulis sebagai "nan".
 class TelemetryLogger {
   static const String header =
       'RX_TIME,TEAM_ID,MISSION_TIME,PACKET_COUNT,ALTITUDE,PRESSURE,'
-      'TEMPERATURE,VOLTAGE,ROLL,PITCH,YAW,GPS_LAT,GPS_LON,GPS_ALT,STATE';
+      'TEMPERATURE,VOLTAGE,CURRENT,ROLL,PITCH,YAW,GPS_LAT,GPS_LON,GPS_ALT,STATE';
 
   Directory? dir;
   File? file;
@@ -47,8 +51,11 @@ class TelemetryLogger {
     }
   }
 
+  static String _f(double v, int d) =>
+      v.isFinite ? v.toStringAsFixed(d) : 'nan';
+
   /// Aman dipanggil berkali-kali dengan paket yang sama (duplikat diabaikan).
-  void log(Telemetry t) {
+  void log(Telemetry t, {double current = double.nan}) {
     if (file == null || identical(t, _last)) return;
     _last = t;
     try {
@@ -57,16 +64,17 @@ class TelemetryLogger {
         t.teamId,
         t.missionTime,
         t.packetCount,
-        t.altitude.toStringAsFixed(1),
-        t.pressure.toStringAsFixed(1),
-        t.temperature.toStringAsFixed(1),
-        t.voltage.toStringAsFixed(2),
-        t.roll.toStringAsFixed(1),
-        t.pitch.toStringAsFixed(1),
-        t.yaw.toStringAsFixed(1),
-        t.gpsLat.toStringAsFixed(6),
-        t.gpsLon.toStringAsFixed(6),
-        t.gpsAlt.toStringAsFixed(1),
+        _f(t.altitude, 1),
+        _f(t.pressure, 1),
+        _f(t.temperature, 1),
+        _f(t.voltage, 2),
+        _f(current, 2),
+        _f(t.roll, 1),
+        _f(t.pitch, 1),
+        _f(t.yaw, 1),
+        _f(t.gpsLat, 6),
+        _f(t.gpsLon, 6),
+        _f(t.gpsAlt, 1),
         t.state,
       ].join(',');
       file!.writeAsStringSync('$row\r\n', mode: FileMode.append, flush: true);

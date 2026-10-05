@@ -27,9 +27,19 @@ import 'widgets/model_3d_glb.dart';
 import 'widgets/model_3d_native.dart';
 import 'widgets/telemetry_log_table.dart';
 
+// =========================================================
+// KONFIGURASI — GANTI DI SINI
+// =========================================================
+
+// false = pakai receiver LoRa sungguhan (rx.py di ESP32)
+// true  = pakai simulator embedded (data palsu)
 const bool kUseEmbeddedSimulator = false;
+
+// IP receiver ESP32 (rx.py mencetak: "[GCS] Set kReceiverHost di main.dart ke: ...")
 const String kReceiverHost = '192.168.43.201';
-const int kTelemetryPort = 9999; 
+const int kTelemetryPort = 9999; // = TCP_PORT di rx.py
+
+// HARUS sama dengan AUTH_TOKEN di rx.py. Dikirim otomatis saat connect.
 const String kAuthToken = 'eepisat-gcs-2026';
 
 const int kCommandPort = 9998;
@@ -485,7 +495,7 @@ class _GcsHomeState extends State<GcsHome> {
 
   void _onServiceUpdate() {
     final t = service.latest;
-    if (t != null) logger.log(t);
+    if (t != null) logger.log(t, current: service.latestCurrent);
 
     if (service.totalReceived > 0 && service.totalReceived != _lastTotal) {
       _lastTotal = service.totalReceived;
@@ -493,6 +503,29 @@ class _GcsHomeState extends State<GcsHome> {
     }
     _runAlerts();
     if (mounted) setState(() {});
+  }
+
+  // ---- data NaN (sensor error) tidak boleh merusak peta / model 3D ----
+  Telemetry? get _gpsLatest {
+    final h = service.history;
+    for (var i = h.length - 1; i >= 0; i--) {
+      if (h[i].gpsLat.isFinite && h[i].gpsLon.isFinite) return h[i];
+    }
+    return null;
+  }
+
+  List<Telemetry> get _gpsHistory => service.history
+      .where((t) => t.gpsLat.isFinite && t.gpsLon.isFinite)
+      .toList();
+
+  Telemetry? get _attLatest {
+    final h = service.history;
+    for (var i = h.length - 1; i >= 0; i--) {
+      if (h[i].roll.isFinite && h[i].pitch.isFinite && h[i].yaw.isFinite) {
+        return h[i];
+      }
+    }
+    return null;
   }
 
   bool get _signalLost {
@@ -514,6 +547,7 @@ class _GcsHomeState extends State<GcsHome> {
       now: DateTime.now(),
       telemetryTarget: '${service.host}:${service.port}',
       telemetryStatus: service.statusMessage,
+      invalidFields: service.invalidFields,
     );
   }
 
@@ -842,8 +876,8 @@ class _GcsHomeState extends State<GcsHome> {
                   flex: 4,
                   child: MapView(
                     palette: palette,
-                    data: service.latest,
-                    history: service.history,
+                    data: _gpsLatest,
+                    history: _gpsHistory,
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -853,13 +887,13 @@ class _GcsHomeState extends State<GcsHome> {
                       ? Model3DGlbView(
                           key: const ValueKey('payload3d-dash'),
                           palette: palette,
-                          data: service.latest,
+                          data: _attLatest,
                           assetPath: 'assets/models/payload.glb',
                         )
                       : Model3DNativeView(
                           key: const ValueKey('payload3d-dash-native'),
                           palette: palette,
-                          data: service.latest,
+                          data: _attLatest,
                           assetPath: 'assets/models/payload.glb',
                         ),
                 ),
@@ -897,6 +931,14 @@ class _GcsHomeState extends State<GcsHome> {
           (i) => FlSpot((offset + i).toDouble(), sel(h[i])),
         );
 
+    // Paket baru tidak membawa suhu -> tampilkan grafik arus (A)
+    final hasTemp = h.any((t) => t.temperature.isFinite);
+    final cur = service.currentHistory;
+    final currentSpots = List.generate(
+      cur.length,
+      (i) => FlSpot((offset + i).toDouble(), cur[i]),
+    );
+
     return Row(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -911,13 +953,21 @@ class _GcsHomeState extends State<GcsHome> {
         ),
         const SizedBox(width: 12),
         Expanded(
-          child: LiveChart(
-            palette: palette,
-            title: 'Temperature',
-            unit: '°C',
-            lineColor: const Color(0xFFF59E0B),
-            spots: spots((t) => t.temperature),
-          ),
+          child: hasTemp
+              ? LiveChart(
+                  palette: palette,
+                  title: 'Temperature',
+                  unit: '°C',
+                  lineColor: const Color(0xFFF59E0B),
+                  spots: spots((t) => t.temperature),
+                )
+              : LiveChart(
+                  palette: palette,
+                  title: 'Current',
+                  unit: 'A',
+                  lineColor: const Color(0xFFF59E0B),
+                  spots: currentSpots,
+                ),
         ),
         const SizedBox(width: 12),
         Expanded(
@@ -998,7 +1048,7 @@ class _GcsHomeState extends State<GcsHome> {
                   Text(
                     value,
                     style: TextStyle(
-                      color: palette.text,
+                      color: value.contains('NaN') ? palette.bad : palette.text,
                       fontSize: 20,
                       fontWeight: FontWeight.w800,
                     ),
@@ -1216,8 +1266,8 @@ class _GcsHomeState extends State<GcsHome> {
                 Expanded(
                   child: MapView(
                     palette: palette,
-                    data: service.latest,
-                    history: service.history,
+                    data: _gpsLatest,
+                    history: _gpsHistory,
                   ),
                 ),
               ],
@@ -1301,13 +1351,13 @@ class _GcsHomeState extends State<GcsHome> {
                       ? Model3DGlbView(
                           key: const ValueKey('payload3d'),
                           palette: palette,
-                          data: service.latest,
+                          data: _attLatest,
                           assetPath: 'assets/models/payload.glb',
                         )
                       : Model3DNativeView(
                           key: const ValueKey('payload3d-native'),
                           palette: palette,
-                          data: service.latest,
+                          data: _attLatest,
                           assetPath: 'assets/models/payload.glb',
                         ),
                 ),
@@ -1348,8 +1398,13 @@ class _GcsHomeState extends State<GcsHome> {
           const Divider(height: 24),
           _attitudeRow('Yaw', t?.yaw, const Color(0xFF7C3AED)),
           const Divider(height: 24),
-          _attitudeRow('Temperature', t?.temperature, const Color(0xFFEF4444),
-              unit: '°C'),
+          if (t != null && !t.temperature.isFinite)
+            _attitudeRow(
+                'Current', service.latestCurrent, const Color(0xFFEF4444),
+                unit: ' A')
+          else
+            _attitudeRow('Temperature', t?.temperature, const Color(0xFFEF4444),
+                unit: '°C'),
           const Divider(height: 24),
           _attitudeRow('Pressure', t?.pressure, const Color(0xFF10B981),
               unit: 'hPa'),
@@ -1360,7 +1415,8 @@ class _GcsHomeState extends State<GcsHome> {
 
   Widget _attitudeRow(String label, double? value, Color color,
       {String unit = '°'}) {
-    final v = value ?? 0;
+    final bool bad = value != null && !value.isFinite;
+    final double v = (value == null || bad) ? 0.0 : value;
     final norm = (v / 180).clamp(-1.0, 1.0);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1380,9 +1436,11 @@ class _GcsHomeState extends State<GcsHome> {
             Text(
               value == null
                   ? '—'
-                  : '${v >= 0 ? '+' : ''}${v.toStringAsFixed(1)}$unit',
+                  : bad
+                      ? 'NaN'
+                      : '${v >= 0 ? '+' : ''}${v.toStringAsFixed(1)}$unit',
               style: TextStyle(
-                color: color,
+                color: bad ? palette.bad : color,
                 fontSize: 16,
                 fontWeight: FontWeight.w700,
                 fontFamily: 'monospace',
@@ -1477,7 +1535,9 @@ class _GcsHomeState extends State<GcsHome> {
           const SizedBox(width: 16),
           if (t != null)
             Text(
-              'Packet #${t.packetCount.toString().padLeft(4, '0')}  ·  ${t.missionTime}  ·  ${t.state}',
+              'Packet #${t.packetCount.toString().padLeft(4, '0')}  ·  ${t.missionTime}  ·  ${t.state}'
+              '${t.voltage.isFinite ? '  ·  ${t.voltage.toStringAsFixed(2)} V' : ''}'
+              '${service.latestCurrent.isFinite ? '  ·  ${service.latestCurrent.toStringAsFixed(2)} A' : ''}',
               style: TextStyle(
                 color: palette.textDim,
                 fontSize: 11,

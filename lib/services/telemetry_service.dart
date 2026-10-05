@@ -45,6 +45,22 @@ class TelemetryService extends ChangeNotifier {
   List<Telemetry> get history => List.unmodifiable(_history);
   static const int maxHistory = 300;
 
+  // ---- field yang tidak ada di model Telemetry (format paket baru) ----
+  /// Arus (A) dari paket terakhir. NaN kalau tidak ada / sensor error.
+  double _latestCurrent = double.nan;
+  double get latestCurrent => _latestCurrent;
+
+  /// Riwayat arus, sejajar 1:1 dengan [history].
+  final List<double> _currentHistory = [];
+  List<double> get currentHistory => List.unmodifiable(_currentHistory);
+
+  /// Nama field yang NaN (sensor error) pada paket terakhir.
+  List<String> _invalidFields = const [];
+  List<String> get invalidFields => _invalidFields;
+
+  /// Jumlah paket ditolak karena checksum salah.
+  int checksumErrors = 0;
+
   /// Total paket yang pernah diterima sejak aplikasi jalan (terus naik,
   /// tidak dibatasi maxHistory). Dipakai sebagai nomor sampel di sumbu X chart.
   int _totalReceived = 0;
@@ -104,13 +120,67 @@ class TelemetryService extends ChangeNotifier {
   /// Set status koneksi dari sumber eksternal.
   void markExternal(ConnectionStatus s, String msg) => _setStatus(s, msg);
 
+  // =========================================================
+  // FORMAT PAKET
+  // =========================================================
+  // BARU (tx.py / rx.py), 14 field:
+  //  0 MISSION_TIME  1 PACKET_ID  2 TEAM_ID  3 PRESSURE  4 ALTITUDE
+  //  5 VOLTAGE  6 CURRENT  7 STATE(0-4)  8 LAT  9 LON
+  //  10 ROLL  11 PITCH  12 YAW  13 CHECKSUM (XOR hex)
+  //
+  // LAMA (simulator embedded / model Telemetry), 14 field:
+  //  TEAM_ID,MISSION_TIME,PACKET_COUNT,ALTITUDE,PRESSURE,TEMPERATURE,
+  //  VOLTAGE,ROLL,PITCH,YAW,GPS_LAT,GPS_LON,GPS_ALT,STATE
+  //
+  // Paket baru diubah ke bentuk LAMA supaya Telemetry.fromCsv tidak perlu
+  // diubah. TEMPERATURE & GPS_ALT tidak ada di paket baru -> NaN.
+  static final RegExp _timeRe = RegExp(r'^\d{1,3}:\d{2}:\d{2}$');
+  static const List<String> _stateNames = [
+    'LAUNCH_PAD',
+    'ASCENT',
+    'APOGEE',
+    'DESCENT',
+    'LANDED',
+  ];
+
+  static bool _isNewFormat(List<String> p) =>
+      p.length == 14 && _timeRe.hasMatch(p[0].trim());
+
+  static String _checksum(String s) {
+    var c = 0;
+    for (final b in utf8.encode(s)) {
+      c ^= b;
+    }
+    return c.toRadixString(16).toUpperCase().padLeft(2, '0');
+  }
+
+  static bool _checksumOk(String line) {
+    final i = line.lastIndexOf(',');
+    if (i < 0) return false;
+    final body = line.substring(0, i);
+    final sent = line.substring(i + 1).trim().toUpperCase();
+    return _checksum(body) == sent;
+  }
+
+  /// "nan" / kosong / tidak terbaca -> "NaN" (bisa di-parse Dart).
+  static String _num(String s) {
+    final v = double.tryParse(s.trim());
+    return (v == null || !v.isFinite) ? 'NaN' : s.trim();
+  }
+
+  static bool _isNan(String s) {
+    final v = double.tryParse(s.trim());
+    return v == null || !v.isFinite;
+  }
+
   void _handleLine(String line) {
     final text = line.trim();
     if (text.isEmpty) return;
     debugPrint('[TCP LINE] $text');
 
-    // Header CSV
-    if (text.toUpperCase().startsWith('TEAM_ID')) {
+    // Header CSV (format lama diawali TEAM_ID, format baru MISSION_TIME)
+    final up = text.toUpperCase();
+    if (up.startsWith('TEAM_ID') || up.startsWith('MISSION_TIME')) {
       _log('CSV header received');
       return;
     }
@@ -121,7 +191,57 @@ class TelemetryService extends ChangeNotifier {
       return;
     }
 
-    final t = Telemetry.fromCsv(text);
+    var csv = text;
+    var current = double.nan;
+    var invalid = <String>[];
+
+    final p = text.split(',').map((e) => e.trim()).toList();
+    if (_isNewFormat(p)) {
+      if (!_checksumOk(text)) {
+        checksumErrors++;
+        _log('Checksum salah (#$checksumErrors): '
+            '${text.length > 70 ? '${text.substring(0, 70)}...' : text}');
+        return;
+      }
+
+      final si = int.tryParse(p[7]);
+      final state = (si != null && si >= 0 && si < _stateNames.length)
+          ? _stateNames[si]
+          : 'UNKNOWN';
+
+      csv = [
+        p[2], // TEAM_ID
+        p[0], // MISSION_TIME
+        int.tryParse(p[1])?.toString() ?? '0', // PACKET_COUNT ("0801" -> 801)
+        _num(p[4]), // ALTITUDE
+        _num(p[3]), // PRESSURE
+        'NaN', // TEMPERATURE (tidak dikirim)
+        _num(p[5]), // VOLTAGE
+        _num(p[10]), // ROLL
+        _num(p[11]), // PITCH
+        _num(p[12]), // YAW
+        _num(p[8]), // GPS_LAT
+        _num(p[9]), // GPS_LON
+        'NaN', // GPS_ALT (tidak dikirim)
+        state,
+      ].join(',');
+
+      final cv = double.tryParse(p[6]);
+      current = (cv != null && cv.isFinite) ? cv : double.nan;
+
+      // Field yang seharusnya ada tapi NaN = sensor error
+      // (lat/lon ditangani alert GPS NO FIX, jadi tidak dihitung di sini)
+      if (_isNan(p[3])) invalid.add('Pressure');
+      if (_isNan(p[4])) invalid.add('Altitude');
+      if (_isNan(p[5])) invalid.add('Voltage');
+      if (_isNan(p[6])) invalid.add('Current');
+      if (_isNan(p[10])) invalid.add('Roll');
+      if (_isNan(p[11])) invalid.add('Pitch');
+      if (_isNan(p[12])) invalid.add('Yaw');
+      if (state == 'UNKNOWN') invalid.add('State');
+    }
+
+    final t = Telemetry.fromCsv(csv);
     if (t == null) {
       final short = text.length > 90 ? '${text.substring(0, 90)}...' : text;
       _log('Invalid packet: $short');
@@ -129,13 +249,20 @@ class TelemetryService extends ChangeNotifier {
     }
 
     _latest = t;
+    _latestCurrent = current;
+    _invalidFields = invalid;
     _history.add(t);
+    _currentHistory.add(current);
     _totalReceived++;
     if (_history.length > maxHistory) {
       _history.removeAt(0);
+      _currentHistory.removeAt(0);
     }
+
+    final nanNote = invalid.isEmpty ? '' : ' | NaN: ${invalid.join(',')}';
     _log('RX #${t.packetCount} | ${t.state} | '
-        'ALT ${t.altitude.toStringAsFixed(1)} m');
+        'ALT ${t.altitude.isFinite ? t.altitude.toStringAsFixed(1) : 'NaN'} m'
+        '$nanNote');
     notifyListeners();
   }
 

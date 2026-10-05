@@ -1,5 +1,3 @@
-import 'dart:math' as math;
-
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
@@ -28,8 +26,10 @@ class LiveChart extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     // Jendela geser: ambil maxPoints data terbaru saja
-    final windowed = spots.length > maxPoints;
-    final view = windowed ? spots.sublist(spots.length - maxPoints) : spots;
+    // Buang titik NaN (sensor error) supaya batas sumbu & garis tidak rusak
+    final finite = spots.where((s) => s.x.isFinite && s.y.isFinite).toList();
+    final windowed = finite.length > maxPoints;
+    final view = windowed ? finite.sublist(finite.length - maxPoints) : finite;
 
     double minY = 0, maxY = 1;
     if (view.isNotEmpty) {
@@ -39,19 +39,6 @@ class LiveChart extends StatelessWidget {
       minY -= pad;
       maxY += pad;
     }
-
-    // ---- Interval sumbu dibuat eksplisit supaya label tidak bertumpuk ----
-    final minX = view.isEmpty ? 0.0 : view.first.x;
-    final maxX = view.isEmpty
-        ? 1.0
-        : (view.last.x == view.first.x ? view.first.x + 10 : view.last.x);
-
-    // Sumbu Y: 4 interval, desimal menyesuaikan besar interval
-    final yInterval = (maxY - minY) / 4 <= 0 ? 1.0 : (maxY - minY) / 4;
-    final yDecimals = yInterval >= 10 ? 0 : (yInterval >= 0.1 ? 1 : 2);
-
-    // Sumbu X: nomor paket (bilangan bulat), maksimal ~5 label, interval >= 1
-    final xInterval = math.max(1.0, ((maxX - minX) / 5).ceilToDouble());
 
     return Container(
       padding: const EdgeInsets.all(12),
@@ -103,15 +90,18 @@ class LiveChart extends StatelessWidget {
                 : LineChart(
                     duration: Duration.zero, // tanpa animasi -> geser mulus
                     LineChartData(
-                      minX: minX,
-                      maxX: maxX,
+                      minX: view.first.x,
+                      maxX: view.last.x == view.first.x
+                          ? view.first.x + 10
+                          : view.last.x,
                       minY: minY,
                       maxY: maxY,
                       gridData: FlGridData(
                         show: true,
                         drawVerticalLine: true,
-                        horizontalInterval: yInterval,
-                        verticalInterval: xInterval,
+                        horizontalInterval:
+                            (maxY - minY) / 4 <= 0 ? 1 : (maxY - minY) / 4,
+                        verticalInterval: (view.length / 6).clamp(1, 999),
                         getDrawingHorizontalLine: (_) => FlLine(
                           color: palette.border.withOpacity(0.3),
                           strokeWidth: 1,
@@ -131,19 +121,12 @@ class LiveChart extends StatelessWidget {
                         leftTitles: AxisTitles(
                           sideTitles: SideTitles(
                             showTitles: true,
-                            reservedSize: 48,
-                            interval: yInterval,
-                            // jangan paksa label di batas min/max (biang tumpukan)
-                            minIncluded: false,
-                            maxIncluded: false,
-                            getTitlesWidget: (v, meta) => SideTitleWidget(
-                              axisSide: meta.axisSide,
-                              child: Text(
-                                v.toStringAsFixed(yDecimals),
-                                style: TextStyle(
-                                  color: palette.textDim,
-                                  fontSize: 10,
-                                ),
+                            reservedSize: 44,
+                            getTitlesWidget: (v, _) => Text(
+                              v.toStringAsFixed(1),
+                              style: TextStyle(
+                                color: palette.textDim,
+                                fontSize: 10,
                               ),
                             ),
                           ),
@@ -151,18 +134,12 @@ class LiveChart extends StatelessWidget {
                         bottomTitles: AxisTitles(
                           sideTitles: SideTitles(
                             showTitles: true,
-                            reservedSize: 24,
-                            interval: xInterval,
-                            minIncluded: false,
-                            maxIncluded: false,
-                            getTitlesWidget: (v, meta) => SideTitleWidget(
-                              axisSide: meta.axisSide,
-                              child: Text(
-                                v.toInt().toString(),
-                                style: TextStyle(
-                                  color: palette.textDim,
-                                  fontSize: 10,
-                                ),
+                            reservedSize: 22,
+                            getTitlesWidget: (v, _) => Text(
+                              v.toInt().toString(),
+                              style: TextStyle(
+                                color: palette.textDim,
+                                fontSize: 10,
                               ),
                             ),
                           ),

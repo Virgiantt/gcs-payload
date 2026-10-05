@@ -105,7 +105,8 @@ class AlertThresholds {
   static const double battWarn = 3.70;
   static const double battCrit = 3.50;
 
-  static int cellsFor(double volt) => math.max(1, (volt / cellMax).ceil());
+  static int cellsFor(double volt) =>
+      volt.isFinite ? math.max(1, (volt / cellMax).ceil()) : 1;
 
   // Suhu (°C)
   static const double tempWarn = 50;
@@ -158,6 +159,7 @@ class AlertService {
     required DateTime now,
     String? telemetryTarget, // mis. "192.168.43.201:9999"
     String? telemetryStatus, // mis. service.statusMessage
+    List<String> invalidFields = const [], // field NaN (sensor error)
   }) {
     final out = <Alert>[];
     final inGrace = now.difference(_started) < AlertThresholds.startupGrace;
@@ -224,17 +226,31 @@ class AlertService {
       }
     }
 
+    // ---- sensor mengirim NaN ----
+    if (invalidFields.isNotEmpty) {
+      out.add(Alert(
+        'sensor',
+        AlertLevel.warning,
+        'SENSOR ERROR',
+        'Sensor tidak mengirim data valid (NaN): ${invalidFields.join(', ')}.',
+        source: AlertSource.telemetry,
+        value: '${invalidFields.length} field',
+        hint: 'Cek wiring dan pembacaan sensor terkait di payload.',
+      ));
+    }
+
     // ---- berdasarkan isi paket terakhir ----
     final t = latest;
     if (t != null) {
       // Baterai (jumlah sel otomatis)
+      final okV = t.voltage.isFinite;
       final cells = AlertThresholds.cellsFor(t.voltage);
       final perCell = t.voltage / cells;
       final critV = AlertThresholds.cellCrit * cells;
       final warnV = AlertThresholds.cellWarn * cells;
       final vDetail = 'Tegangan ${t.voltage.toStringAsFixed(2)} V '
           '(${cells}S, ${perCell.toStringAsFixed(2)} V per sel).';
-      if (t.voltage < critV) {
+      if (okV && t.voltage < critV) {
         out.add(Alert(
           'battery',
           AlertLevel.critical,
@@ -246,7 +262,7 @@ class AlertService {
           hint: 'Baterai hampir habis. Pertimbangkan mengakhiri misi / '
               'ganti baterai.',
         ));
-      } else if (t.voltage < warnV) {
+      } else if (okV && t.voltage < warnV) {
         out.add(Alert(
           'battery',
           AlertLevel.warning,
@@ -286,15 +302,18 @@ class AlertService {
       }
 
       // GPS
-      final noFix = t.gpsLat == 0 && t.gpsLon == 0;
+      final gpsNan = t.gpsLat.isNaN || t.gpsLon.isNaN;
+      final noFix = gpsNan || (t.gpsLat == 0 && t.gpsLon == 0);
       if (noFix) {
-        out.add(const Alert(
+        out.add(Alert(
           'gps_nofix',
           AlertLevel.warning,
           'GPS NO FIX',
-          'Koordinat dilaporkan 0, 0 — GPS belum mengunci satelit.',
+          gpsNan
+              ? 'Koordinat tidak valid (NaN) — GPS belum mengunci satelit.'
+              : 'Koordinat dilaporkan 0, 0 — GPS belum mengunci satelit.',
           source: AlertSource.gps,
-          value: '0, 0',
+          value: gpsNan ? 'NaN' : '0, 0',
           hint: 'Pastikan antena GPS menghadap langit terbuka dan tunggu lock.',
         ));
       } else {
