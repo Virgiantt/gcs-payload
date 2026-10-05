@@ -27,19 +27,9 @@ import 'widgets/model_3d_glb.dart';
 import 'widgets/model_3d_native.dart';
 import 'widgets/telemetry_log_table.dart';
 
-// =========================================================
-// KONFIGURASI — GANTI DI SINI
-// =========================================================
-
-// false = pakai receiver LoRa sungguhan (rx.py di ESP32)
-// true  = pakai simulator embedded (data palsu)
 const bool kUseEmbeddedSimulator = false;
-
-// IP receiver ESP32 (rx.py mencetak: "[GCS] Set kReceiverHost di main.dart ke: ...")
 const String kReceiverHost = '192.168.43.201';
-const int kTelemetryPort = 9999; // = TCP_PORT di rx.py
-
-// HARUS sama dengan AUTH_TOKEN di rx.py. Dikirim otomatis saat connect.
+const int kTelemetryPort = 9999; 
 const String kAuthToken = 'eepisat-gcs-2026';
 
 const int kCommandPort = 9998;

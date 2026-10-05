@@ -11,7 +11,6 @@ class _Def {
   const _Def(this.name, this.label, this.icon);
 }
 
-/// Preset sudut servo yang disimpan user (hanya selama aplikasi berjalan).
 class _Preset {
   final int channel;
   final int angle;
@@ -19,11 +18,10 @@ class _Preset {
   String get label => 'S$channel: $angle°';
 }
 
-/// Command Center dengan 4 tab: Servo, Presets, Manual, Log.
 class CommandPanel extends StatefulWidget {
   final AppPalette palette;
   final CommandService service;
-  final bool compact; // dipertahankan agar kompatibel dengan main.dart
+  final bool compact;
 
   const CommandPanel({
     super.key,
@@ -37,29 +35,24 @@ class CommandPanel extends StatefulWidget {
 }
 
 class _CommandPanelState extends State<CommandPanel> {
-  // Nama perintah harus sama dengan yang dikenali program di Raspberry Pi.
   static const List<_Def> _critical = [
     _Def('SEPARATE_1', 'Separate Stage 1', Icons.call_split),
     _Def('SEPARATE_2', 'Separate Stage 2', Icons.call_split),
     _Def('PAYLOAD_RELEASE', 'Release Payload', Icons.unarchive_outlined),
   ];
 
-  // static -> preset tidak hilang saat pindah tab utama
   static final List<_Preset> _presets = [];
 
-  int _tab = 0; // 0 Servo, 1 Presets, 2 Manual, 3 Log
+  int _tab = 0; 
 
-  // --- Servo ---
   int _channel = 2;
   final TextEditingController _angleCtrl = TextEditingController(text: '90');
 
-  // --- Config lock (Container / Wing) ---
   String _cfgTarget = 'CONTAINER';
   String _cfgState = 'LOCK';
   final TextEditingController _cfgAngleCtrl =
       TextEditingController(text: '100');
 
-  // --- Manual ---
   final TextEditingController _manualCtrl = TextEditingController();
 
   AppPalette get p => widget.palette;
@@ -100,8 +93,6 @@ class _CommandPanelState extends State<CommandPanel> {
       ),
     );
     if (ok == true) {
-      // Panel tidak punya tombol ARM, jadi arm otomatis setelah konfirmasi
-      // (CommandService menolak perintah kritis saat SAFE).
       if (!svc.armed) svc.arm();
       svc.send(d.name);
     }
@@ -126,7 +117,6 @@ class _CommandPanelState extends State<CommandPanel> {
     svc.send('CONFIG $_cfgTarget $_cfgState $a');
   }
 
-  /// Tab Manual: kirim isi kolom. Perintah kritis tetap minta konfirmasi.
   void _sendManual() {
     final v = _manualCtrl.text.trim();
     if (v.isEmpty || !svc.connected) return;
