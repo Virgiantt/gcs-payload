@@ -15,11 +15,8 @@ class TelemetryLogTable extends StatefulWidget {
   final AppPalette palette;
   final List<Telemetry> history;
 
-  /// Hanya untuk teks label ("Latest N packets"). Jumlah baris yang terlihat
-  /// ditentukan oleh tinggi tabel; sisanya bisa di-scroll.
   final int maxRows;
 
-  /// true -> antena tidak menerima data: baris paling atas diisi NA.
   final bool signalLost;
 
   const TelemetryLogTable({
