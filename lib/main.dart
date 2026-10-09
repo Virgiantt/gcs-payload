@@ -30,18 +30,20 @@ import 'widgets/telemetry_log_table.dart';
 // =========================================================
 // KONFIGURASI — GANTI DI SINI
 // =========================================================
-
-// false = pakai receiver LoRa sungguhan (rx.py di ESP32)
-// true  = pakai simulator embedded (data palsu)
+//
+// ▸ CARA PAKAI MODE LORA:
+//   1. Set kUseEmbeddedSimulator = false
+//   2. Set kReceiverHost = IP ESP32 receiver (lihat Serial Monitor Arduino)
+//   3. Pastikan laptop & ESP32 di WiFi yang sama
+//   4. flutter run -d windows
+//
+// ▸ CARA PAKAI MODE SIMULATOR (dev, tanpa hardware):
+//   1. Set kUseEmbeddedSimulator = true
+//   2. flutter run -d windows
+//
 const bool kUseEmbeddedSimulator = false;
-
-// IP receiver ESP32 (rx.py mencetak: "[GCS] Set kReceiverHost di main.dart ke: ...")
-const String kReceiverHost = '192.168.43.201';
-const int kTelemetryPort = 9999; // = TCP_PORT di rx.py
-
-// HARUS sama dengan AUTH_TOKEN di rx.py. Dikirim otomatis saat connect.
-const String kAuthToken = 'eepisat-gcs-2026';
-
+const String kReceiverHost = '192.168.43.132';
+const int kTelemetryPort = 9999;
 const int kCommandPort = 9998;
 
 const String kLaunchCmd = 'LAUNCH';
@@ -408,12 +410,10 @@ class _GcsHomeState extends State<GcsHome> {
   AppPalette palette = AppPalette.light;
   late ThemeData _theme = _buildTheme(palette);
 
-  // ---- TelemetryService: host + AUTH disesuaikan mode ----
-  // Mode LoRa: receiver rx.py menuntut "AUTH <token>" dalam 3 detik.
+  // ---- TelemetryService: host disesuaikan mode ----
   late final TelemetryService service = TelemetryService(
     host: kUseEmbeddedSimulator ? '127.0.0.1' : kReceiverHost,
     port: kTelemetryPort,
-    authToken: kUseEmbeddedSimulator ? null : kAuthToken,
   );
 
   final EmbeddedSimulator simulator = EmbeddedSimulator();
@@ -472,21 +472,13 @@ class _GcsHomeState extends State<GcsHome> {
     } else {
       // ============= MODE LORA (hardware) =============
       debugPrint('[GCS] Mode LORA — receiver $kReceiverHost:$kTelemetryPort');
+      _simLog.add('[GCS] Menghubungkan ke receiver LoRa $kReceiverHost ...');
+      _simLog.add('[GCS] Pastikan ESP32 receiver sudah connect WiFi.');
+      _simLog.add('[GCS] Test: Test-NetConnection $kReceiverHost '
+          '-Port $kTelemetryPort');
 
-      // Log koneksi, AUTH, dan tiap paket -> panel "LoRa LOG" (tab Maps).
-      // Yang terbaru di atas.
-      service.onLog = (msg) {
-        if (!mounted) return;
-        final n = DateTime.now();
-        String two(int v) => v.toString().padLeft(2, '0');
-        setState(() {
-          _simLog.insert(
-              0, '[${two(n.hour)}:${two(n.minute)}:${two(n.second)}] $msg');
-          if (_simLog.length > 100) _simLog.removeLast();
-        });
-      };
-
-      // Receiver belum punya jalur command -> cmd.start() di-skip.
+      // Tidak ada simulator. Langsung connect ke ESP32 receiver.
+      // Command bridge belum ada di receiver -> cmd.start() di-skip.
       await Future.delayed(const Duration(milliseconds: 300));
       service.connect();
       // cmd.start();   // ← uncomment kalau receiver sudah support command
@@ -494,8 +486,8 @@ class _GcsHomeState extends State<GcsHome> {
   }
 
   void _onServiceUpdate() {
-    final t = service.latest;
-    if (t != null) logger.log(t, current: service.latestCurrent);
+    // Logger TIDAK auto-save. User klik tombol "Save CSV" untuk menyimpan.
+    // (logger.log(t) DIHAPUS dari sini)
 
     if (service.totalReceived > 0 && service.totalReceived != _lastTotal) {
       _lastTotal = service.totalReceived;
@@ -503,29 +495,6 @@ class _GcsHomeState extends State<GcsHome> {
     }
     _runAlerts();
     if (mounted) setState(() {});
-  }
-
-  // ---- data NaN (sensor error) tidak boleh merusak peta / model 3D ----
-  Telemetry? get _gpsLatest {
-    final h = service.history;
-    for (var i = h.length - 1; i >= 0; i--) {
-      if (h[i].gpsLat.isFinite && h[i].gpsLon.isFinite) return h[i];
-    }
-    return null;
-  }
-
-  List<Telemetry> get _gpsHistory => service.history
-      .where((t) => t.gpsLat.isFinite && t.gpsLon.isFinite)
-      .toList();
-
-  Telemetry? get _attLatest {
-    final h = service.history;
-    for (var i = h.length - 1; i >= 0; i--) {
-      if (h[i].roll.isFinite && h[i].pitch.isFinite && h[i].yaw.isFinite) {
-        return h[i];
-      }
-    }
-    return null;
   }
 
   bool get _signalLost {
@@ -542,13 +511,35 @@ class _GcsHomeState extends State<GcsHome> {
       history: service.history,
       lastPacketAt: _lastPacketAt,
       telemetryLinkUp: service.status == ConnectionStatus.connected,
-      // Mode LoRa: jalur command memang belum dipakai, jangan dianggap putus.
-      commandLinkUp: kUseEmbeddedSimulator ? cmd.connected : true,
+      commandLinkUp: cmd.connected,
       now: DateTime.now(),
-      telemetryTarget: '${service.host}:${service.port}',
-      telemetryStatus: service.statusMessage,
-      invalidFields: service.invalidFields,
     );
+  }
+
+  // =========================================================
+  // SAVE CSV — MANUAL (dipicu user, hanya 20 data terbaru)
+  // =========================================================
+  void _onSaveCsv() {
+    final n = logger.save(
+      service.history,
+      currentHistory: service.currentHistory,
+    );
+
+    if (!mounted) return;
+
+    final msg = n > 0
+        ? '✅ Tersimpan $n data terbaru ke CSV'
+        : '❌ Gagal menyimpan: ${logger.error ?? "tidak diketahui"}';
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(msg),
+        duration: const Duration(seconds: 2),
+        backgroundColor: n > 0 ? palette.ok : palette.bad,
+      ),
+    );
+
+    setState(() {});
   }
 
   @override
@@ -664,8 +655,7 @@ class _GcsHomeState extends State<GcsHome> {
               Row(
                 children: [
                   Text(
-                    // Team ID diambil dari paket yang diterima (mis. EEPISAT)
-                    'Team ${service.latest?.teamId ?? kSimTeamId}  ·  Target ${service.host}:${service.port}',
+                    'Team 1064  ·  Target ${service.host}:${service.port}',
                     style: TextStyle(color: palette.textDim, fontSize: 11),
                   ),
                 ],
@@ -876,8 +866,8 @@ class _GcsHomeState extends State<GcsHome> {
                   flex: 4,
                   child: MapView(
                     palette: palette,
-                    data: _gpsLatest,
-                    history: _gpsHistory,
+                    data: service.latest,
+                    history: service.history,
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -887,13 +877,13 @@ class _GcsHomeState extends State<GcsHome> {
                       ? Model3DGlbView(
                           key: const ValueKey('payload3d-dash'),
                           palette: palette,
-                          data: _attLatest,
+                          data: service.latest,
                           assetPath: 'assets/models/payload.glb',
                         )
                       : Model3DNativeView(
                           key: const ValueKey('payload3d-dash-native'),
                           palette: palette,
-                          data: _attLatest,
+                          data: service.latest,
                           assetPath: 'assets/models/payload.glb',
                         ),
                 ),
@@ -931,14 +921,6 @@ class _GcsHomeState extends State<GcsHome> {
           (i) => FlSpot((offset + i).toDouble(), sel(h[i])),
         );
 
-    // Paket baru tidak membawa suhu -> tampilkan grafik arus (A)
-    final hasTemp = h.any((t) => t.temperature.isFinite);
-    final cur = service.currentHistory;
-    final currentSpots = List.generate(
-      cur.length,
-      (i) => FlSpot((offset + i).toDouble(), cur[i]),
-    );
-
     return Row(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -953,21 +935,13 @@ class _GcsHomeState extends State<GcsHome> {
         ),
         const SizedBox(width: 12),
         Expanded(
-          child: hasTemp
-              ? LiveChart(
-                  palette: palette,
-                  title: 'Temperature',
-                  unit: '°C',
-                  lineColor: const Color(0xFFF59E0B),
-                  spots: spots((t) => t.temperature),
-                )
-              : LiveChart(
-                  palette: palette,
-                  title: 'Current',
-                  unit: 'A',
-                  lineColor: const Color(0xFFF59E0B),
-                  spots: currentSpots,
-                ),
+          child: LiveChart(
+            palette: palette,
+            title: 'Temperature',
+            unit: '°C',
+            lineColor: const Color(0xFFF59E0B),
+            spots: spots((t) => t.temperature),
+          ),
         ),
         const SizedBox(width: 12),
         Expanded(
@@ -1048,7 +1022,7 @@ class _GcsHomeState extends State<GcsHome> {
                   Text(
                     value,
                     style: TextStyle(
-                      color: value.contains('NaN') ? palette.bad : palette.text,
+                      color: palette.text,
                       fontSize: 20,
                       fontWeight: FontWeight.w800,
                     ),
@@ -1266,8 +1240,8 @@ class _GcsHomeState extends State<GcsHome> {
                 Expanded(
                   child: MapView(
                     palette: palette,
-                    data: _gpsLatest,
-                    history: _gpsHistory,
+                    data: service.latest,
+                    history: service.history,
                   ),
                 ),
               ],
@@ -1351,13 +1325,13 @@ class _GcsHomeState extends State<GcsHome> {
                       ? Model3DGlbView(
                           key: const ValueKey('payload3d'),
                           palette: palette,
-                          data: _attLatest,
+                          data: service.latest,
                           assetPath: 'assets/models/payload.glb',
                         )
                       : Model3DNativeView(
                           key: const ValueKey('payload3d-native'),
                           palette: palette,
-                          data: _attLatest,
+                          data: service.latest,
                           assetPath: 'assets/models/payload.glb',
                         ),
                 ),
@@ -1398,13 +1372,8 @@ class _GcsHomeState extends State<GcsHome> {
           const Divider(height: 24),
           _attitudeRow('Yaw', t?.yaw, const Color(0xFF7C3AED)),
           const Divider(height: 24),
-          if (t != null && !t.temperature.isFinite)
-            _attitudeRow(
-                'Current', service.latestCurrent, const Color(0xFFEF4444),
-                unit: ' A')
-          else
-            _attitudeRow('Temperature', t?.temperature, const Color(0xFFEF4444),
-                unit: '°C'),
+          _attitudeRow('Temperature', t?.temperature, const Color(0xFFEF4444),
+              unit: '°C'),
           const Divider(height: 24),
           _attitudeRow('Pressure', t?.pressure, const Color(0xFF10B981),
               unit: 'hPa'),
@@ -1415,8 +1384,7 @@ class _GcsHomeState extends State<GcsHome> {
 
   Widget _attitudeRow(String label, double? value, Color color,
       {String unit = '°'}) {
-    final bool bad = value != null && !value.isFinite;
-    final double v = (value == null || bad) ? 0.0 : value;
+    final v = value ?? 0;
     final norm = (v / 180).clamp(-1.0, 1.0);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1436,11 +1404,9 @@ class _GcsHomeState extends State<GcsHome> {
             Text(
               value == null
                   ? '—'
-                  : bad
-                      ? 'NaN'
-                      : '${v >= 0 ? '+' : ''}${v.toStringAsFixed(1)}$unit',
+                  : '${v >= 0 ? '+' : ''}${v.toStringAsFixed(1)}$unit',
               style: TextStyle(
-                color: bad ? palette.bad : color,
+                color: color,
                 fontSize: 16,
                 fontWeight: FontWeight.w700,
                 fontFamily: 'monospace',
@@ -1462,13 +1428,22 @@ class _GcsHomeState extends State<GcsHome> {
     );
   }
 
+  // =========================================================
+  // LOG BAR — MANUAL SAVE CSV
+  // =========================================================
   Widget _buildLogBar() {
+    final p = palette;
     final failed = logger.error != null;
+    final hasData = service.history.isNotEmpty;
+    final savedMsg = logger.hasSaved
+        ? 'Tersimpan: ${logger.rows} data terbaru  ·  ${logger.path}'
+        : 'Belum ada data tersimpan  ·  Klik "Save CSV" untuk menyimpan';
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
-        color: palette.panel,
-        border: Border.all(color: palette.border),
+        color: p.panel,
+        border: Border.all(color: p.border),
         borderRadius: BorderRadius.circular(10),
       ),
       child: Row(
@@ -1476,26 +1451,70 @@ class _GcsHomeState extends State<GcsHome> {
           Icon(
             failed ? Icons.error_outline : Icons.save_alt,
             size: 16,
-            color: failed ? palette.bad : palette.ok,
+            color: failed ? p.bad : p.ok,
           ),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              failed
-                  ? 'Gagal menyimpan CSV: ${logger.error}'
-                  : 'Semua data tersimpan otomatis (${logger.rows} baris)  ·  ${logger.path}',
+              failed ? 'Gagal menyimpan CSV: ${logger.error}' : savedMsg,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: TextStyle(color: palette.textDim, fontSize: 11),
+              style: TextStyle(color: p.textDim, fontSize: 11),
             ),
           ),
           const SizedBox(width: 10),
+
+          // ===== Tombol Save CSV (manual) =====
+          _saveCsvButton(hasData, p),
+
+          const SizedBox(width: 6),
+
+          // ===== Tombol Open folder =====
           _headerButton(
             icon: Icons.folder_open,
             label: 'Open folder',
             onTap: logger.openFolder,
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _saveCsvButton(bool enabled, AppPalette p) {
+    return Tooltip(
+      message: 'Simpan ${TelemetryLogger.maxSave} data terbaru ke CSV',
+      child: InkWell(
+        onTap: enabled ? _onSaveCsv : null,
+        borderRadius: BorderRadius.circular(8),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+          decoration: BoxDecoration(
+            color: enabled ? p.accent.withOpacity(0.15) : p.panelAlt,
+            border: Border.all(
+              color: enabled ? p.accent : p.border,
+            ),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.save_alt,
+                size: 16,
+                color: enabled ? p.accent : p.textDim,
+              ),
+              const SizedBox(width: 6),
+              Text(
+                'Save CSV (${TelemetryLogger.maxSave})',
+                style: TextStyle(
+                  color: enabled ? p.accent : p.textDim,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -1535,9 +1554,7 @@ class _GcsHomeState extends State<GcsHome> {
           const SizedBox(width: 16),
           if (t != null)
             Text(
-              'Packet #${t.packetCount.toString().padLeft(4, '0')}  ·  ${t.missionTime}  ·  ${t.state}'
-              '${t.voltage.isFinite ? '  ·  ${t.voltage.toStringAsFixed(2)} V' : ''}'
-              '${service.latestCurrent.isFinite ? '  ·  ${service.latestCurrent.toStringAsFixed(2)} A' : ''}',
+              'Packet #${t.packetCount.toString().padLeft(4, '0')}  ·  ${t.missionTime}  ·  ${t.state}',
               style: TextStyle(
                 color: palette.textDim,
                 fontSize: 11,
