@@ -7,6 +7,12 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import '../models/telemetry.dart';
 import '../theme/app_theme.dart';
 
+/// Viewer 3D untuk payload.glb.
+///
+/// - Model dilayani lewat server HTTP lokal (127.0.0.1) supaya tidak kena
+///   batas ukuran HTML WebView2 (~2 MB).
+/// - Hanya SATU WebView, dibuat sekali. Rotasi dikirim lewat JavaScript.
+/// - AutomaticKeepAlive: WebView tidak di-dispose saat pindah tab.
 class Model3DGlbView extends StatefulWidget {
   final AppPalette palette;
   final Telemetry? data;
@@ -31,6 +37,18 @@ class _Model3DGlbViewState extends State<Model3DGlbView>
   String? _error;
   bool _pageReady = false;
   int _lastPacket = -1;
+
+  // ================= PENGATURAN TAMPILAN 3D =================
+  // Pose awal kamera: "<theta> <phi> <jarak>"
+  //   theta : putar kiri-kanan (0deg = tampak depan)
+  //   phi   : sudut dari atas (90deg = sejajar mata, makin kecil = makin dari atas)
+  static const String _initOrbit = '0deg 78deg auto';
+
+  // Supersampling: model digambar _supersample kali lebih besar lalu
+  // dikecilkan -> tepi lebih halus. 1 = mati, 1.5-2 = tajam, makin besar
+  // makin berat. Turunkan ke 1 kalau terasa patah-patah.
+  static const double _supersample = 1.5;
+  // ==========================================================
 
   @override
   bool get wantKeepAlive => true;
@@ -99,21 +117,34 @@ class _Model3DGlbViewState extends State<Model3DGlbView>
   onerror="document.getElementById('st').textContent='ERROR: model-viewer.min.js gagal dimuat'"></script>
 <style>
   html, body { margin:0; height:100%; background:$bg; overflow:hidden; }
-  model-viewer { width:100%; height:100%; background:$bg; }
+  #wrap { position:relative; width:100%; height:100%; overflow:hidden; }
+  model-viewer {
+    position:absolute; left:0; top:0;
+    width:${_supersample * 100}%; height:${_supersample * 100}%;
+    transform:scale(${1 / _supersample}); transform-origin:0 0;
+    background:$bg;
+  }
   #st { position:absolute; top:8px; left:10px; font:11px monospace; color:#888;
         z-index:5; pointer-events:none; }
 </style>
 </head>
 <body>
 <div id="st">memuat model...</div>
+<div id="wrap">
 <model-viewer id="mv" src="/payload.glb"
   camera-controls
+  camera-orbit="$_initOrbit"
+  camera-target="auto auto auto"
   min-camera-orbit="auto auto 15%"
   max-camera-orbit="auto auto 600%"
   interaction-prompt="none"
+  environment-image="neutral"
   shadow-intensity="1"
+  shadow-softness="1"
+  exposure="1.05"
   orientation="0deg 0deg 0deg">
 </model-viewer>
+</div>
 <script>
   var st = document.getElementById('st');
   var mvEl = document.getElementById('mv');
@@ -122,10 +153,15 @@ class _Model3DGlbViewState extends State<Model3DGlbView>
     st.textContent = 'ERROR model: ' + (e.detail && e.detail.sourceError ? e.detail.sourceError : 'gagal memuat GLB');
     console.log(st.textContent);
   });
+  // Matikan penurunan resolusi otomatis (penyebab gambar burik/blur)
+  customElements.whenDefined('model-viewer').then(function (C) {
+    try { C.minimumRenderScale = 1; } catch (e) {}
+  });
   setTimeout(function () {
     if (!customElements.get('model-viewer')) st.textContent = 'ERROR: model-viewer tidak terdaftar';
   }, 4000);
   window.setAttitude = function (r, p, y) {
+    if (!isFinite(r) || !isFinite(p) || !isFinite(y)) return;
     var mv = document.getElementById('mv');
     if (mv) mv.orientation = r + 'deg ' + p + 'deg ' + y + 'deg';
   };
@@ -134,7 +170,8 @@ class _Model3DGlbViewState extends State<Model3DGlbView>
     mvEl.cameraOrbit = o.theta + 'rad ' + o.phi + 'rad ' + (o.radius * f) + 'm';
   };
   window.resetView = function () {
-    mvEl.cameraOrbit = 'auto auto auto';
+    mvEl.cameraOrbit = '$_initOrbit';
+    mvEl.cameraTarget = 'auto auto auto';
     mvEl.fieldOfView = 'auto';
   };
   window.setBg = function (c) {
