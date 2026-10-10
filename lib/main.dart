@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show Platform, ServerSocket, Socket;
+import 'dart:io' show Platform, ServerSocket, Socket, exit;
 import 'dart:math' as math;
 
 import 'package:fl_chart/fl_chart.dart';
@@ -699,6 +699,8 @@ class _GcsHomeState extends State<GcsHome> {
             label: 'Reconnect',
             onTap: () => service.reconnect(),
           ),
+          const SizedBox(width: 8),
+          _menuButton(),
         ],
       ),
     );
@@ -768,6 +770,105 @@ class _GcsHomeState extends State<GcsHome> {
         ),
       ),
     );
+  }
+
+  // =========================================================
+  // MENU TITIK TIGA (⋮) — QUIT APPLICATION
+  // =========================================================
+  Widget _menuButton() {
+    return PopupMenuButton<String>(
+      tooltip: 'Menu',
+      offset: const Offset(0, 46),
+      color: palette.panel,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(10),
+        side: BorderSide(color: palette.border),
+      ),
+      onSelected: (v) {
+        if (v == 'quit') _confirmQuit();
+      },
+      itemBuilder: (_) => [
+        PopupMenuItem<String>(
+          value: 'quit',
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.power_settings_new, size: 18, color: palette.bad),
+              const SizedBox(width: 10),
+              Text(
+                'Quit application',
+                style: TextStyle(
+                  color: palette.bad,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+      child: Container(
+        padding: const EdgeInsets.all(9),
+        decoration: BoxDecoration(
+          color: palette.panelAlt,
+          border: Border.all(color: palette.border),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Icon(Icons.more_vert, size: 18, color: palette.text),
+      ),
+    );
+  }
+
+  Future<void> _confirmQuit() async {
+    // CSV disimpan manual -> ingatkan kalau belum pernah di-Save
+    final unsaved = service.history.isNotEmpty && !logger.hasSaved;
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (c) => Theme(
+        // context State ada di atas widget Theme, jadi tema dipasang ulang
+        data: _theme,
+        child: AlertDialog(
+          title: const Text('Quit application?'),
+          content: Text(
+            unsaved
+                ? 'Data telemetri belum pernah disimpan ke CSV '
+                    '(tombol "Save CSV"). Data di memori akan hilang.\n\n'
+                    'Tetap keluar?'
+                : 'Koneksi telemetri dan command akan diputus.\n\n'
+                    'Tetap keluar?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(c, false),
+              child: const Text('Batal'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: palette.bad),
+              onPressed: () => Navigator.pop(c, true),
+              child: const Text('Quit'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (ok == true) await _quitApp();
+  }
+
+  Future<void> _quitApp() async {
+    _alertTimer?.cancel();
+    try {
+      if (kUseEmbeddedSimulator) await simulator.stop();
+    } catch (_) {}
+
+    if (_isDesktopPlatform) {
+      // Windows / macOS / Linux desktop
+      await windowManager.destroy();
+    } else {
+      // flutter-pi (Raspberry Pi tanpa desktop) / platform lain
+      exit(0);
+    }
   }
 
   // =========================================================
