@@ -13,6 +13,9 @@ import '../theme/app_theme.dart';
 ///   batas ukuran HTML WebView2 (~2 MB).
 /// - Hanya SATU WebView, dibuat sekali. Rotasi dikirim lewat JavaScript.
 /// - AutomaticKeepAlive: WebView tidak di-dispose saat pindah tab.
+/// - Kualitas render: supersampling (digambar lebih besar lalu dikecilkan)
+///   yang menyesuaikan diri dengan DPI layar. Tombol "2x" di pojok kanan
+///   bawah untuk ganti 1x / 2x / 3x tanpa rebuild.
 class Model3DGlbView extends StatefulWidget {
   final AppPalette palette;
   final Telemetry? data;
@@ -44,11 +47,18 @@ class _Model3DGlbViewState extends State<Model3DGlbView>
   //   phi   : sudut dari atas (90deg = sejajar mata, makin kecil = makin dari atas)
   static const String _initOrbit = '0deg 78deg auto';
 
-  // Supersampling: model digambar _supersample kali lebih besar lalu
-  // dikecilkan -> tepi lebih halus. 1 = mati, 1.5-2 = tajam, makin besar
-  // makin berat. Turunkan ke 1 kalau terasa patah-patah.
-  static const double _supersample = 1.5;
+  // Tingkat kualitas (supersampling). Dipilih lewat tombol di pojok kanan
+  // bawah. Angka = model digambar N kali lebih besar lalu dikecilkan -> tepi
+  // lebih halus & tidak burik. Pakai angka BULAT (1, 2, 3) supaya hasil
+  // pengecilannya rata. Makin besar makin berat untuk GPU.
+  static const List<double> _qLevels = [1, 2, 3];
+  static const int _defaultQuality = 1; // index -> 2x
   // ==========================================================
+
+  int _qIdx = _defaultQuality;
+  double _hostDpr = 1.0; // devicePixelRatio Flutter (skala layar Windows)
+
+  double get _ss => _qLevels[_qIdx];
 
   @override
   bool get wantKeepAlive => true;
@@ -57,6 +67,16 @@ class _Model3DGlbViewState extends State<Model3DGlbView>
   void initState() {
     super.initState();
     _startServer();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final d = MediaQuery.of(context).devicePixelRatio;
+    if (d != _hostDpr) {
+      _hostDpr = d;
+      _applyQuality();
+    }
   }
 
   @override
@@ -113,6 +133,11 @@ class _Model3DGlbViewState extends State<Model3DGlbView>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<script>
+  // Dibaca model-viewer saat dimuat: matikan penurunan resolusi otomatis.
+  self.ModelViewerElement = self.ModelViewerElement || {};
+  self.ModelViewerElement.minimumRenderScale = 1;
+</script>
 <script type="module" src="/model-viewer.min.js"
   onerror="document.getElementById('st').textContent='ERROR: model-viewer.min.js gagal dimuat'"></script>
 <style>
@@ -120,8 +145,8 @@ class _Model3DGlbViewState extends State<Model3DGlbView>
   #wrap { position:relative; width:100%; height:100%; overflow:hidden; }
   model-viewer {
     position:absolute; left:0; top:0;
-    width:${_supersample * 100}%; height:${_supersample * 100}%;
-    transform:scale(${1 / _supersample}); transform-origin:0 0;
+    width:${_ss * 100}%; height:${_ss * 100}%;
+    transform:scale(${1 / _ss}); transform-origin:0 0;
     background:$bg;
   }
   #st { position:absolute; top:8px; left:10px; font:11px monospace; color:#888;
@@ -148,18 +173,50 @@ class _Model3DGlbViewState extends State<Model3DGlbView>
 <script>
   var st = document.getElementById('st');
   var mvEl = document.getElementById('mv');
+  var wrapEl = document.getElementById('wrap');
   mvEl.addEventListener('load', function () { st.textContent = ''; console.log('model loaded'); });
   mvEl.addEventListener('error', function (e) {
     st.textContent = 'ERROR model: ' + (e.detail && e.detail.sourceError ? e.detail.sourceError : 'gagal memuat GLB');
     console.log(st.textContent);
   });
-  // Matikan penurunan resolusi otomatis (penyebab gambar burik/blur)
+  // Cadangan kalau pengaturan di <head> tidak terbaca
   customElements.whenDefined('model-viewer').then(function (C) {
     try { C.minimumRenderScale = 1; } catch (e) {}
   });
   setTimeout(function () {
     if (!customElements.get('model-viewer')) st.textContent = 'ERROR: model-viewer tidak terdaftar';
   }, 4000);
+
+  // ---- Kualitas render (supersampling adaptif) ----
+  // base    : faktor dari tombol kualitas (1x / 2x / 3x)
+  // hostDpr : skala layar Flutter. Kalau WebView ternyata menggambar pada
+  //           DPR lebih rendah dari layar (penyebab umum gambar burik di
+  //           layar 125% / 150%), selisihnya ditambahkan otomatis.
+  // Total dibatasi maks. 4x dan ukuran kanvas maks. 8192 px.
+  var base = $_ss;
+  var hostDpr = 1;
+  function applyQuality() {
+    var wdpr = window.devicePixelRatio || 1;
+    var comp = Math.max(1, hostDpr / wdpr);
+    var big = Math.max(wrapEl.clientWidth, wrapEl.clientHeight) * wdpr;
+    var s = Math.max(1, Math.min(base * comp, 4, big > 0 ? 8192 / big : 4));
+    mvEl.style.width = (s * 100) + '%';
+    mvEl.style.height = (s * 100) + '%';
+    mvEl.style.transform = 'scale(' + (1 / s) + ')';
+    return s;
+  }
+  window.setQuality = function (b, d) {
+    base = b;
+    hostDpr = d;
+    var s = applyQuality();
+    console.log('quality base=' + b + 'x hostDpr=' + d + ' webDpr=' + (window.devicePixelRatio || 1) + ' total=' + s.toFixed(2) + 'x');
+    setTimeout(function () {
+      var c = mvEl.shadowRoot && mvEl.shadowRoot.querySelector('canvas');
+      if (c) console.log('canvas ' + c.width + 'x' + c.height);
+    }, 700);
+  };
+  window.addEventListener('resize', applyQuality);
+
   window.setAttitude = function (r, p, y) {
     if (!isFinite(r) || !isFinite(p) || !isFinite(y)) return;
     var mv = document.getElementById('mv');
@@ -201,6 +258,16 @@ class _Model3DGlbViewState extends State<Model3DGlbView>
     _web!.evaluateJavascript(
       source: 'window.setAttitude(${t.roll}, ${t.pitch}, ${t.yaw});',
     );
+  }
+
+  void _applyQuality() {
+    if (!_pageReady || _web == null) return;
+    _web!.evaluateJavascript(source: 'window.setQuality($_ss, $_hostDpr);');
+  }
+
+  void _cycleQuality() {
+    setState(() => _qIdx = (_qIdx + 1) % _qLevels.length);
+    _applyQuality();
   }
 
   @override
@@ -250,6 +317,7 @@ class _Model3DGlbViewState extends State<Model3DGlbView>
         onLoadStop: (c, url) {
           _pageReady = true;
           _lastPacket = -1;
+          _applyQuality();
           _pushAttitude();
         },
         onReceivedError: (c, req, err) =>
@@ -264,7 +332,7 @@ class _Model3DGlbViewState extends State<Model3DGlbView>
   }
 
   Widget _zoomControls(AppPalette p) {
-    Widget btn(IconData icon, String tip, VoidCallback onTap) {
+    Widget box(Widget child, String tip, VoidCallback onTap) {
       return Tooltip(
         message: tip,
         child: InkWell(
@@ -273,20 +341,37 @@ class _Model3DGlbViewState extends State<Model3DGlbView>
           child: Container(
             width: 34,
             height: 34,
+            alignment: Alignment.center,
             decoration: BoxDecoration(
               color: p.panelAlt.withOpacity(0.92),
               border: Border.all(color: p.border),
               borderRadius: BorderRadius.circular(8),
             ),
-            child: Icon(icon, size: 18, color: p.text),
+            child: child,
           ),
         ),
       );
     }
 
+    Widget btn(IconData icon, String tip, VoidCallback onTap) =>
+        box(Icon(icon, size: 18, color: p.text), tip, onTap);
+
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
+        box(
+          Text(
+            '${_ss.toInt()}x',
+            style: TextStyle(
+              color: p.accent,
+              fontSize: 12,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          'Kualitas render ${_ss.toInt()}x (tap untuk ganti 1x/2x/3x)',
+          _cycleQuality,
+        ),
+        const SizedBox(height: 6),
         btn(Icons.add, 'Zoom in', () => _js('window.zoomBy(0.75);')),
         const SizedBox(height: 6),
         btn(Icons.remove, 'Zoom out', () => _js('window.zoomBy(1.35);')),
