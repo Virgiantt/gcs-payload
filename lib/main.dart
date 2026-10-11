@@ -27,26 +27,8 @@ import 'widgets/model_3d_glb.dart';
 import 'widgets/model_3d_native.dart';
 import 'widgets/telemetry_log_table.dart';
 
-// =========================================================
-// KONFIGURASI — GANTI DI SINI
-// =========================================================
-//
-// ▸ MODE LORA (hardware real):
-//   1. Set kUseEmbeddedSimulator = false
-//   2. Set kReceiverHost = IP ESP32 receiver / RPi
-//      - Kalau GCS & receiver di device yang SAMA → '127.0.0.1'
-//      - Kalau berbeda device → IP receiver
-//   3. flutter run -d windows
-//
-// ▸ MODE SIMULATOR (dev, tanpa hardware):
-//   1. Set kUseEmbeddedSimulator = true
-//   2. flutter run -d windows
-//
 const bool kUseEmbeddedSimulator = false;
 
-// >>> GANTI SESUAI KEBUTUHAN <<<
-// Di RPi (GCS + receiver satu device): '127.0.0.1'
-// Di laptop (receiver di RPi terpisah):  '192.168.43.233'
 const String kReceiverHost = '127.0.0.1';
 
 const int kTelemetryPort = 9999;
