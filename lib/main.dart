@@ -31,18 +31,24 @@ import 'widgets/telemetry_log_table.dart';
 // KONFIGURASI — GANTI DI SINI
 // =========================================================
 //
-// ▸ CARA PAKAI MODE LORA:
+// ▸ MODE LORA (hardware real):
 //   1. Set kUseEmbeddedSimulator = false
-//   2. Set kReceiverHost = IP ESP32 receiver (lihat Serial Monitor Arduino)
-//   3. Pastikan laptop & ESP32 di WiFi yang sama
-//   4. flutter run -d windows
+//   2. Set kReceiverHost = IP ESP32 receiver / RPi
+//      - Kalau GCS & receiver di device yang SAMA → '127.0.0.1'
+//      - Kalau berbeda device → IP receiver
+//   3. flutter run -d windows
 //
-// ▸ CARA PAKAI MODE SIMULATOR (dev, tanpa hardware):
+// ▸ MODE SIMULATOR (dev, tanpa hardware):
 //   1. Set kUseEmbeddedSimulator = true
 //   2. flutter run -d windows
 //
 const bool kUseEmbeddedSimulator = false;
-const String kReceiverHost = '192.168.43.132';
+
+// >>> GANTI SESUAI KEBUTUHAN <<<
+// Di RPi (GCS + receiver satu device): '127.0.0.1'
+// Di laptop (receiver di RPi terpisah):  '192.168.43.233'
+const String kReceiverHost = '127.0.0.1';
+
 const int kTelemetryPort = 9999;
 const int kCommandPort = 9998;
 
@@ -59,14 +65,13 @@ const String kSimCsvHeader =
 // =========================================================
 // DETEKSI PLATFORM
 // =========================================================
-bool get _isDesktopPlatform {
+
+/// True hanya di Windows/macOS desktop (yang punya window_manager plugin).
+/// RPi (flutter-pi) dan Linux headless → false.
+/// Web → false.
+bool get _isDesktopWindowManager {
   if (kIsWeb) return false;
-  if (Platform.isWindows || Platform.isMacOS) return true;
-  if (Platform.isLinux) {
-    return Platform.environment.containsKey('DISPLAY') ||
-        Platform.environment.containsKey('WAYLAND_DISPLAY');
-  }
-  return false;
+  return Platform.isWindows || Platform.isMacOS;
 }
 
 bool get _webViewSupported {
@@ -359,7 +364,9 @@ void main() async {
     }
   };
 
-  if (_isDesktopPlatform) {
+  // window_manager HANYA untuk Windows/macOS desktop.
+  // Di RPi/flutter-pi plugin ini tidak ada -> skip supaya tidak crash.
+  if (_isDesktopWindowManager) {
     await windowManager.ensureInitialized();
 
     const opts = WindowOptions(
@@ -377,7 +384,7 @@ void main() async {
 
   runApp(const GcsApp());
 
-  if (_isDesktopPlatform) {
+  if (_isDesktopWindowManager) {
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       await Future.delayed(const Duration(milliseconds: 300));
       await windowManager.maximize();
@@ -410,7 +417,7 @@ class _GcsHomeState extends State<GcsHome> {
   AppPalette palette = AppPalette.light;
   late ThemeData _theme = _buildTheme(palette);
 
-  // ---- TelemetryService: host disesuaikan mode ----
+  // ---- TelemetryService ----
   late final TelemetryService service = TelemetryService(
     host: kUseEmbeddedSimulator ? '127.0.0.1' : kReceiverHost,
     port: kTelemetryPort,
@@ -472,13 +479,11 @@ class _GcsHomeState extends State<GcsHome> {
     } else {
       // ============= MODE LORA (hardware) =============
       debugPrint('[GCS] Mode LORA — receiver $kReceiverHost:$kTelemetryPort');
-      _simLog.add('[GCS] Menghubungkan ke receiver LoRa $kReceiverHost ...');
-      _simLog.add('[GCS] Pastikan ESP32 receiver sudah connect WiFi.');
+      _simLog.add('[GCS] Menghubungkan ke receiver $kReceiverHost ...');
+      _simLog.add('[GCS] Pastikan receiver sudah connect WiFi.');
       _simLog.add('[GCS] Test: Test-NetConnection $kReceiverHost '
           '-Port $kTelemetryPort');
 
-      // Tidak ada simulator. Langsung connect ke ESP32 receiver.
-      // Command bridge belum ada di receiver -> cmd.start() di-skip.
       await Future.delayed(const Duration(milliseconds: 300));
       service.connect();
       // cmd.start();   // ← uncomment kalau receiver sudah support command
@@ -487,7 +492,6 @@ class _GcsHomeState extends State<GcsHome> {
 
   void _onServiceUpdate() {
     // Logger TIDAK auto-save. User klik tombol "Save CSV" untuk menyimpan.
-    // (logger.log(t) DIHAPUS dari sini)
 
     if (service.totalReceived > 0 && service.totalReceived != _lastTotal) {
       _lastTotal = service.totalReceived;
@@ -520,10 +524,7 @@ class _GcsHomeState extends State<GcsHome> {
   // SAVE CSV — MANUAL (dipicu user, hanya 20 data terbaru)
   // =========================================================
   void _onSaveCsv() {
-    final n = logger.save(
-      service.history,
-      currentHistory: service.currentHistory,
-    );
+    final n = logger.save(service.history);
 
     if (!mounted) return;
 
@@ -562,7 +563,7 @@ class _GcsHomeState extends State<GcsHome> {
 
   Future<void> _toggleFullscreen() async {
     _isFullscreen = !_isFullscreen;
-    if (_isDesktopPlatform) {
+    if (_isDesktopWindowManager) {
       await windowManager.setFullScreen(_isFullscreen);
     }
     setState(() {});
@@ -820,13 +821,11 @@ class _GcsHomeState extends State<GcsHome> {
   }
 
   Future<void> _confirmQuit() async {
-    // CSV disimpan manual -> ingatkan kalau belum pernah di-Save
     final unsaved = service.history.isNotEmpty && !logger.hasSaved;
 
     final ok = await showDialog<bool>(
       context: context,
       builder: (c) => Theme(
-        // context State ada di atas widget Theme, jadi tema dipasang ulang
         data: _theme,
         child: AlertDialog(
           title: const Text('Quit application?'),
@@ -862,11 +861,11 @@ class _GcsHomeState extends State<GcsHome> {
       if (kUseEmbeddedSimulator) await simulator.stop();
     } catch (_) {}
 
-    if (_isDesktopPlatform) {
-      // Windows / macOS / Linux desktop
+    if (_isDesktopWindowManager) {
+      // Windows / macOS desktop
       await windowManager.destroy();
     } else {
-      // flutter-pi (Raspberry Pi tanpa desktop) / platform lain
+      // RPi (flutter-pi) / Linux / platform lain
       exit(0);
     }
   }
@@ -1564,13 +1563,8 @@ class _GcsHomeState extends State<GcsHome> {
             ),
           ),
           const SizedBox(width: 10),
-
-          // ===== Tombol Save CSV (manual) =====
           _saveCsvButton(hasData, p),
-
           const SizedBox(width: 6),
-
-          // ===== Tombol Open folder =====
           _headerButton(
             icon: Icons.folder_open,
             label: 'Open folder',
@@ -1644,7 +1638,7 @@ class _GcsHomeState extends State<GcsHome> {
             child: Text(
               kUseEmbeddedSimulator
                   ? '${service.statusMessage}  ·  Simulator port ${simulator.port}'
-                  : '${service.statusMessage}  ·  LoRa receiver ${service.host}:${service.port}',
+                  : '${service.statusMessage}  ·  Receiver ${service.host}:${service.port}',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(color: palette.textDim, fontSize: 11),
