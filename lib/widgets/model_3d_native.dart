@@ -629,7 +629,6 @@ class _Model3DNativeViewState extends State<Model3DNativeView>
   Widget build(BuildContext context) {
     super.build(context);
     final p = widget.palette;
-    final mm = _mesh;
     return Container(
       decoration: BoxDecoration(
         color: p.panel,
@@ -642,15 +641,6 @@ class _Model3DNativeViewState extends State<Model3DNativeView>
           Positioned.fill(child: _buildBody(p)),
           Positioned(left: 12, bottom: 12, child: _attitudeBadge(p)),
           Positioned(right: 12, bottom: 12, child: _zoomControls(p)),
-          if (mm != null && mm.simplified)
-            Positioned(
-              left: 12,
-              top: 10,
-              child: Text(
-                'model disederhanakan ${mm.triCount}/${mm.origTris} segitiga',
-                style: TextStyle(color: p.textDim, fontSize: 10),
-              ),
-            ),
         ],
       ),
     );
