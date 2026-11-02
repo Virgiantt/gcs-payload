@@ -8,7 +8,7 @@ import '../models/telemetry.dart';
 ///
 /// - Data TIDAK disimpan otomatis. Panggil [save] untuk menyimpan.
 /// - Yang disimpan hanya [maxSave] data terbaru (default 20).
-/// - Lokasi: <Documents>/CanSat_GCS_Logs/telemetry_YYYYMMDD_HHMMSS.csv
+/// - Lokasi: `Documents/CanSat_GCS_Logs/telemetry_YYYYMMDD_HHMMSS.csv`
 class TelemetryLogger {
   static const String header =
       'RX_TIME,TEAM_ID,MISSION_TIME,PACKET_COUNT,ALTITUDE,PRESSURE,'

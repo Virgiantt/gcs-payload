@@ -38,8 +38,8 @@ IconData _levelIcon(AlertLevel l) => switch (l) {
 Widget _tag(String text, Color c, {bool filled = false}) => Container(
       padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
       decoration: BoxDecoration(
-        color: filled ? c : c.withOpacity(0.12),
-        border: Border.all(color: c.withOpacity(0.5)),
+        color: filled ? c : c.withValues(alpha: 0.12),
+        border: Border.all(color: c.withValues(alpha: 0.5)),
         borderRadius: BorderRadius.circular(5),
       ),
       child: Text(
@@ -122,12 +122,12 @@ class _AlertBarState extends State<AlertBar>
           padding: const EdgeInsets.all(10),
           decoration: BoxDecoration(
             color: Color.alphaBlend(
-                color.withOpacity(
-                    level == AlertLevel.normal ? 0.04 : 0.06 + 0.10 * glow),
+                color.withValues(
+                    alpha: level == AlertLevel.normal ? 0.04 : 0.06 + 0.10 * glow),
                 p.panel),
             border: Border.all(
-              color: color.withOpacity(
-                  level == AlertLevel.normal ? 0.35 : 0.6 + 0.4 * glow),
+              color: color.withValues(
+                  alpha: level == AlertLevel.normal ? 0.35 : 0.6 + 0.4 * glow),
               width: 1.5,
             ),
             borderRadius: BorderRadius.circular(12),
@@ -246,7 +246,7 @@ class _AlertBarState extends State<AlertBar>
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.15),
+        color: color.withValues(alpha: 0.15),
         borderRadius: BorderRadius.circular(20),
       ),
       child: Row(
@@ -305,8 +305,8 @@ class _AlertBarState extends State<AlertBar>
       width: width,
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: c.withOpacity(0.10),
-        border: Border.all(color: c.withOpacity(0.5)),
+        color: c.withValues(alpha: 0.10),
+        border: Border.all(color: c.withValues(alpha: 0.5)),
         borderRadius: BorderRadius.circular(10),
       ),
       child: Row(
@@ -316,7 +316,7 @@ class _AlertBarState extends State<AlertBar>
             width: 36,
             height: 36,
             decoration: BoxDecoration(
-              color: c.withOpacity(0.18),
+              color: c.withValues(alpha: 0.18),
               shape: BoxShape.circle,
             ),
             child: Icon(
@@ -616,7 +616,7 @@ class _AlertLogDialogState extends State<_AlertLogDialog> {
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: c.withOpacity(0.06),
+        color: c.withValues(alpha: 0.06),
         border: Border(left: BorderSide(color: c, width: 4)),
         borderRadius: BorderRadius.circular(8),
       ),

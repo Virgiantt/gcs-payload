@@ -99,11 +99,11 @@ class LiveChart extends StatelessWidget {
                             (maxY - minY) / 4 <= 0 ? 1 : (maxY - minY) / 4,
                         verticalInterval: (view.length / 6).clamp(1, 999),
                         getDrawingHorizontalLine: (_) => FlLine(
-                          color: palette.border.withOpacity(0.3),
+                          color: palette.border.withValues(alpha: 0.3),
                           strokeWidth: 1,
                         ),
                         getDrawingVerticalLine: (_) => FlLine(
-                          color: palette.border.withOpacity(0.3),
+                          color: palette.border.withValues(alpha: 0.3),
                           strokeWidth: 1,
                         ),
                       ),
@@ -151,7 +151,7 @@ class LiveChart extends StatelessWidget {
                           dotData: const FlDotData(show: false),
                           belowBarData: BarAreaData(
                             show: true,
-                            color: lineColor.withOpacity(0.1),
+                            color: lineColor.withValues(alpha: 0.1),
                           ),
                         ),
                       ],

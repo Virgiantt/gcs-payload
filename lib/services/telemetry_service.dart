@@ -11,7 +11,7 @@ class TelemetryService extends ChangeNotifier {
   final int port;
 
   /// Token handshake untuk receiver LoRa (ESP32). Dikirim sebagai
-  /// "AUTH <token>\n" tepat setelah TCP tersambung. null = tanpa AUTH
+  /// "AUTH `token`\n" tepat setelah TCP tersambung. null = tanpa AUTH
   /// (mis. simulator embedded).
   final String? authToken;
 

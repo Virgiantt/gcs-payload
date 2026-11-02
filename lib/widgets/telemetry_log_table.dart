@@ -74,8 +74,8 @@ class _TelemetryLogTableState extends State<TelemetryLogTable> {
   }
 
   List<String> _cells(Telemetry t) => [
-        '${t.teamId}',
-        '${t.packetCount}',
+        t.teamId,
+        t.packetCount.toString(),
         t.missionTime,
         t.state,
         t.altitude.toStringAsFixed(1),
@@ -111,7 +111,7 @@ class _TelemetryLogTableState extends State<TelemetryLogTable> {
           final n = gap > 20 ? 20 : gap; // batasi supaya tabel tidak banjir
           for (var k = 1; k <= n; k++) {
             chrono.add(_R(
-              _naCells('${t.teamId}', '${prev.packetCount + k}'),
+              _naCells(t.teamId, '${prev.packetCount + k}'),
               _Kind.lost,
             ));
           }
@@ -124,7 +124,7 @@ class _TelemetryLogTableState extends State<TelemetryLogTable> {
     final rows = chrono.reversed.toList();
 
     if (widget.signalLost && src.isNotEmpty) {
-      rows.insert(0, _R(_naCells('${src.last.teamId}', _na), _Kind.lost));
+      rows.insert(0, _R(_naCells(src.last.teamId, _na), _Kind.lost));
     } else if (rows.isNotEmpty && rows[0].kind == _Kind.normal) {
       rows[0] = _R(rows[0].cells, _Kind.latest);
     }
@@ -205,8 +205,8 @@ class _TelemetryLogTableState extends State<TelemetryLogTable> {
                       padding: const EdgeInsets.symmetric(
                           horizontal: 10, vertical: 5),
                       decoration: BoxDecoration(
-                        color: p.accent.withOpacity(0.12),
-                        border: Border.all(color: p.accent.withOpacity(0.5)),
+                        color: p.accent.withValues(alpha: 0.12),
+                        border: Border.all(color: p.accent.withValues(alpha: 0.5)),
                         borderRadius: BorderRadius.circular(8),
                       ),
                       child: Row(
@@ -298,11 +298,11 @@ class _TelemetryLogTableState extends State<TelemetryLogTable> {
     final Color bg = header
         ? p.panelAlt
         : lost
-            ? p.bad.withOpacity(0.08)
+            ? p.bad.withValues(alpha: 0.08)
             : latest
-                ? p.accent.withOpacity(0.10)
+                ? p.accent.withValues(alpha: 0.10)
                 : (index.isOdd
-                    ? p.panelAlt.withOpacity(0.5)
+                    ? p.panelAlt.withValues(alpha: 0.5)
                     : Colors.transparent);
 
     return Container(

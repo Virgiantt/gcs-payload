@@ -83,9 +83,9 @@ class AppTheme {
         displayColor: p.text,
       ),
       scrollbarTheme: ScrollbarThemeData(
-        thumbColor: MaterialStateProperty.all(p.border),
+        thumbColor: WidgetStateProperty.all(p.border),
         radius: const Radius.circular(6),
-        thickness: MaterialStateProperty.all(10),
+        thickness: WidgetStateProperty.all(10),
       ),
       
       tabBarTheme: TabBarThemeData(

@@ -709,7 +709,7 @@ class _Model3DNativeViewState extends State<Model3DNativeView>
             width: 34,
             height: 34,
             decoration: BoxDecoration(
-              color: p.panelAlt.withOpacity(0.92),
+              color: p.panelAlt.withValues(alpha: 0.92),
               border: Border.all(color: p.border),
               borderRadius: BorderRadius.circular(8),
             ),
@@ -736,7 +736,7 @@ class _Model3DNativeViewState extends State<Model3DNativeView>
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: p.panelAlt.withOpacity(0.92),
+        color: p.panelAlt.withValues(alpha: 0.92),
         border: Border.all(color: p.border),
         borderRadius: BorderRadius.circular(8),
       ),

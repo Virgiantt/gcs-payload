@@ -247,7 +247,7 @@ class _CommandPanelState extends State<CommandPanel> {
                     padding:
                         const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
                     decoration: BoxDecoration(
-                      color: p.border.withOpacity(0.6),
+                      color: p.border.withValues(alpha: 0.6),
                       borderRadius: BorderRadius.circular(8),
                     ),
                     child: Text('$badge',
@@ -335,7 +335,7 @@ class _CommandPanelState extends State<CommandPanel> {
                       _presets.isEmpty
                           ? Text('Belum ada preset',
                               style: TextStyle(
-                                  color: p.textDim.withOpacity(0.7),
+                                  color: p.textDim.withValues(alpha: 0.7),
                                   fontSize: 11))
                           : Wrap(
                               spacing: 6,
@@ -490,7 +490,7 @@ class _CommandPanelState extends State<CommandPanel> {
       margin: const EdgeInsets.only(bottom: 6),
       padding: const EdgeInsets.fromLTRB(12, 6, 8, 6),
       decoration: BoxDecoration(
-        color: p.panelAlt.withOpacity(0.5),
+        color: p.panelAlt.withValues(alpha: 0.5),
         border: Border.all(color: p.border),
         borderRadius: BorderRadius.circular(8),
       ),
@@ -657,7 +657,7 @@ class _CommandPanelState extends State<CommandPanel> {
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: p.panelAlt.withOpacity(0.5),
+        color: p.panelAlt.withValues(alpha: 0.5),
         border: Border.all(color: p.border),
         borderRadius: BorderRadius.circular(10),
       ),
@@ -761,7 +761,7 @@ class _CommandPanelState extends State<CommandPanel> {
     required Map<T, String> items,
     required ValueChanged<T>? onChanged,
   }) {
-    final c = onChanged == null ? p.textDim.withOpacity(0.6) : p.text;
+    final c = onChanged == null ? p.textDim.withValues(alpha: 0.6) : p.text;
     return Container(
       height: 36,
       padding: const EdgeInsets.symmetric(horizontal: 10),
@@ -863,7 +863,7 @@ class _CommandPanelState extends State<CommandPanel> {
     double? width,
     double? height,
   }) {
-    final c = enabled ? color : p.textDim.withOpacity(0.5);
+    final c = enabled ? color : p.textDim.withValues(alpha: 0.5);
     return InkWell(
       onTap: enabled ? onTap : null,
       borderRadius: BorderRadius.circular(8),
@@ -872,8 +872,8 @@ class _CommandPanelState extends State<CommandPanel> {
         height: height ?? (dense ? 34 : 42),
         padding: const EdgeInsets.symmetric(horizontal: 12),
         decoration: BoxDecoration(
-          color: c.withOpacity(enabled ? 0.12 : 0.05),
-          border: Border.all(color: c.withOpacity(enabled ? 0.6 : 0.3)),
+          color: c.withValues(alpha: enabled ? 0.12 : 0.05),
+          border: Border.all(color: c.withValues(alpha: enabled ? 0.6 : 0.3)),
           borderRadius: BorderRadius.circular(8),
         ),
         child: Row(

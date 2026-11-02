@@ -7,15 +7,6 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import '../models/telemetry.dart';
 import '../theme/app_theme.dart';
 
-/// Viewer 3D untuk payload.glb.
-///
-/// - Model dilayani lewat server HTTP lokal (127.0.0.1) supaya tidak kena
-///   batas ukuran HTML WebView2 (~2 MB).
-/// - Hanya SATU WebView, dibuat sekali. Rotasi dikirim lewat JavaScript.
-/// - AutomaticKeepAlive: WebView tidak di-dispose saat pindah tab.
-/// - Kualitas render: supersampling (digambar lebih besar lalu dikecilkan)
-///   yang menyesuaikan diri dengan DPI layar. Tombol "2x" di pojok kanan
-///   bawah untuk ganti 1x / 2x / 3x tanpa rebuild.
 class Model3DGlbView extends StatefulWidget {
   final AppPalette palette;
   final Telemetry? data;
@@ -41,16 +32,8 @@ class _Model3DGlbViewState extends State<Model3DGlbView>
   bool _pageReady = false;
   int _lastPacket = -1;
 
-  // ================= PENGATURAN TAMPILAN 3D =================
-  // Pose awal kamera: "<theta> <phi> <jarak>"
-  //   theta : putar kiri-kanan (0deg = tampak depan)
-  //   phi   : sudut dari atas (90deg = sejajar mata, makin kecil = makin dari atas)
   static const String _initOrbit = '0deg 78deg auto';
 
-  // Tingkat kualitas (supersampling). Dipilih lewat tombol di pojok kanan
-  // bawah. Angka = model digambar N kali lebih besar lalu dikecilkan -> tepi
-  // lebih halus & tidak burik. Pakai angka BULAT (1, 2, 3) supaya hasil
-  // pengecilannya rata. Makin besar makin berat untuk GPU.
   static const List<double> _qLevels = [1, 2, 3];
   static const int _defaultQuality = 1; // index -> 2x
   // ==========================================================
@@ -86,7 +69,7 @@ class _Model3DGlbViewState extends State<Model3DGlbView>
   }
 
   String _hex(Color c) =>
-      '#${(c.value & 0xFFFFFF).toRadixString(16).padLeft(6, '0')}';
+      '#${(c.toARGB32() & 0xFFFFFF).toRadixString(16).padLeft(6, '0')}';
 
   Future<void> _startServer() async {
     try {
@@ -343,7 +326,7 @@ class _Model3DGlbViewState extends State<Model3DGlbView>
             height: 34,
             alignment: Alignment.center,
             decoration: BoxDecoration(
-              color: p.panelAlt.withOpacity(0.92),
+              color: p.panelAlt.withValues(alpha: 0.92),
               border: Border.all(color: p.border),
               borderRadius: BorderRadius.circular(8),
             ),
@@ -387,7 +370,7 @@ class _Model3DGlbViewState extends State<Model3DGlbView>
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: p.panelAlt.withOpacity(0.92),
+        color: p.panelAlt.withValues(alpha: 0.92),
         border: Border.all(color: p.border),
         borderRadius: BorderRadius.circular(8),
       ),

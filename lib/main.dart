@@ -22,12 +22,18 @@ import 'widgets/command_panel.dart';
 import 'widgets/connection_indicator.dart';
 import 'widgets/gps_panel.dart';
 import 'widgets/live_chart.dart';
-import 'widgets/map_view.dart';
-import 'widgets/model_3d_glb.dart';
-import 'widgets/model_3d_native.dart';
+import 'widgets/map_3d_view.dart';
 import 'widgets/telemetry_log_table.dart';
 
-const bool kUseEmbeddedSimulator = false;
+const bool kUseEmbeddedSimulator = true;
+
+/// Laju paket simulator. Payload asli 1 Hz. Naikkan ke 2 sampai 5
+/// kalau ingin melihat gerakan lebih rapat saat uji tampilan.
+const double kSimPacketHz = 1;
+
+/// true: setelah mendarat 15 detik, simulator terbang ulang otomatis
+/// dengan arah angin dan arah condong roket yang baru.
+const bool kSimLoop = true;
 
 const String kReceiverHost = '127.0.0.1';
 
@@ -36,7 +42,7 @@ const int kCommandPort = 9998;
 
 const String kLaunchCmd = 'LAUNCH';
 const double kSimPacketLossRate = 0.0;
-const String kLogoAsset = 'assets/icons/assets1.jpeg';
+const String kLogoAsset = 'assets/icons/eepisat.png';
 const String kSimTeamId = '1064';
 const double kSimBaseLat = -7.275764;
 const double kSimBaseLon = 112.794317;
@@ -56,14 +62,6 @@ bool get _isDesktopWindowManager {
   return Platform.isWindows || Platform.isMacOS;
 }
 
-bool get _webViewSupported {
-  if (kIsWeb) return true;
-  return Platform.isAndroid ||
-      Platform.isIOS ||
-      Platform.isMacOS ||
-      Platform.isWindows;
-}
-
 // =========================================================
 // FLIGHT PROFILE (untuk simulator embedded — mode dev)
 // =========================================================
@@ -74,6 +72,28 @@ class FlightProfile {
 
   bool launched = false;
   DateTime? _launchAt;
+
+  // ---- Parameter penerbangan dummy ----
+  static const double _padHold = 5; // detik di pad setelah LAUNCH
+  static const double _ascentDur = 14; // detik naik sampai apogee
+  static const double _apogeeAlt = 700; // m
+  static const double _apogeeDur = 3; // detik payload terlepas dan berguling
+  static const double _fastRate = 15; // m/s, turun sebelum parasut utama
+  static const double _mainAlt = 100; // m, parasut utama terbuka
+  static const double _slowRate = 5; // m/s, turun setelah parasut utama
+  static const double _landedHold = 15; // detik diam sebelum terbang ulang
+  static const double _leanDeg = 6; // kemiringan roket saat naik
+
+  static const double _tApogee = _padHold + _ascentDur;
+  static const double _tDescent = _tApogee + _apogeeDur;
+  static const double _tMain =
+      _tDescent + (_apogeeAlt - _mainAlt) / _fastRate;
+  static const double _tLanded = _tMain + _mainAlt / _slowRate;
+
+  // Diacak setiap peluncuran supaya lintasan tiap terbang berbeda.
+  double _windDir = 60; // derajat, arah angin bertiup
+  double _windSpeed = 4; // m/s
+  double _launchAz = 30; // derajat, arah condong roket
 
   FlightProfile() {
     reset();
@@ -89,57 +109,104 @@ class FlightProfile {
   void launch() {
     launched = true;
     _launchAt = DateTime.now();
+    _windDir = _u(0, 360);
+    _windSpeed = _u(2.5, 6);
+    _launchAz = _u(0, 360);
   }
 
-  bool get inFlight =>
-      launched &&
-      _launchAt != null &&
-      10.0 + DateTime.now().difference(_launchAt!).inMilliseconds / 1000.0 <=
-          90.0;
+  /// Detik sejak perintah LAUNCH. -1 kalau belum diluncurkan.
+  double get _t => (!launched || _launchAt == null)
+      ? -1.0
+      : DateTime.now().difference(_launchAt!).inMilliseconds / 1000.0;
+
+  bool get inFlight => launched && _t >= 0 && _t < _tLanded;
+
+  /// Pergeseran horizontal (timur, utara) dalam meter selama turun.
+  (double, double) _descentOffset(double td) {
+    final az = _launchAz * math.pi / 180;
+    final wd = _windDir * math.pi / 180;
+    final apH = _apogeeAlt * math.tan(_leanDeg * math.pi / 180);
+    final drift = _windSpeed * td;
+    final sway = 6 * math.sin(td * 0.4);
+    return (
+      apH * math.sin(az) + drift * math.sin(wd) + sway * math.cos(wd),
+      apH * math.cos(az) + drift * math.cos(wd) - sway * math.sin(wd),
+    );
+  }
 
   String step() {
     packetCount++;
     final elapsed = DateTime.now().difference(_start).inMilliseconds / 1000.0;
-    final cycleTime = (!launched || _launchAt == null)
-        ? 0.0
-        : 10.0 + DateTime.now().difference(_launchAt!).inMilliseconds / 1000.0;
+
+    var t = _t;
+    if (kSimLoop && launched && t > _tLanded + _landedHold) {
+      launch();
+      t = _t;
+    }
+
+    final az = _launchAz * math.pi / 180;
+    final lean = _leanDeg * math.pi / 180;
 
     String state;
     double alt, roll, pitch, yaw;
+    double east = 0, north = 0;
 
-    if (cycleTime <= 10.0) {
+    if (t < _padHold) {
       state = 'LAUNCH_PAD';
-      alt = _u(0.0, 0.4);
-      roll = _u(-0.5, 0.5);
-      pitch = _u(-0.5, 0.5);
-      yaw = 0.0;
-    } else if (cycleTime <= 40.0) {
+      alt = _u(0.0, 0.3);
+      roll = _n(0.3);
+      pitch = _n(0.3);
+      yaw = _launchAz + _n(0.3);
+    } else if (t < _tApogee) {
+      // Naik melambat (parabola), roket condong dan berputar pada sumbunya.
       state = 'ASCENT';
-      final progress = (cycleTime - 10.0) / 30.0;
-      alt = 700.0 * math.sin(progress * (math.pi / 2.0)) + _u(-1.5, 1.5);
-      roll = _u(-15.0, 15.0);
-      pitch = _u(5.0, 20.0);
-      yaw = (cycleTime * 12.0) % 360.0;
-    } else if (cycleTime <= 50.0) {
+      final p = (t - _padHold) / _ascentDur;
+      alt = _apogeeAlt * (1 - (1 - p) * (1 - p)) + _n(1.0);
+      final h = math.max(0.0, alt) * math.tan(lean);
+      east = h * math.sin(az);
+      north = h * math.cos(az);
+      roll = 2 * math.sin(t * 9) + _n(0.8);
+      pitch = _leanDeg + 1.5 * math.sin(t * 7) + _n(0.8);
+      yaw = _launchAz + (t - _padHold) * 90;
+    } else if (t < _tDescent) {
+      // Payload lepas dari roket dan berguling.
       state = 'APOGEE';
-      alt = 700.0 + _u(-1.0, 1.0);
-      roll = _u(-25.0, 25.0);
-      pitch = _u(-10.0, 10.0);
-      yaw = (cycleTime * 8.0) % 360.0;
-    } else if (cycleTime <= 90.0) {
+      final p = (t - _tApogee) / _apogeeDur;
+      alt = _apogeeAlt - 3 * p * p + _n(0.5);
+      final o = _descentOffset(0);
+      east = o.$1;
+      north = o.$2;
+      roll = 70 * math.sin(t * 2.3) + _n(2);
+      pitch = 60 * math.sin(t * 1.7 + 0.8) + _n(2);
+      yaw = _launchAz + (t - _padHold) * 60;
+    } else if (t < _tLanded) {
+      // Turun dua tahap, terbawa angin, berayun di bawah parasut.
       state = 'DESCENT';
-      final progress = (cycleTime - 50.0) / 40.0;
-      alt = math.max(0.5, 700.0 * (1.0 - progress) + _u(-1.0, 1.0));
-      roll = _u(-8.0, 8.0);
-      pitch = _u(-5.0, 5.0);
-      yaw = (cycleTime * 4.0) % 360.0;
+      final td = t - _tDescent;
+      final a = t < _tMain
+          ? _apogeeAlt - _fastRate * td
+          : _mainAlt - _slowRate * (t - _tMain);
+      alt = math.max(0.3, a + _n(0.6));
+      final o = _descentOffset(td);
+      east = o.$1;
+      north = o.$2;
+      final amp = t < _tMain ? 18.0 : 10.0;
+      roll = amp * 0.7 * math.sin(td * 2.3 + 1) + _n(0.6);
+      pitch = amp * math.sin(td * 1.9) + _n(0.6);
+      yaw = _windDir + td * 25;
     } else {
+      // Mendarat lalu rebah ke samping.
       state = 'LANDED';
+      final td = _tLanded - _tDescent;
+      final o = _descentOffset(td);
+      east = o.$1;
+      north = o.$2;
       alt = 0.0;
-      roll = _u(-1.0, 1.0);
-      pitch = _u(-1.0, 1.0);
-      yaw = 180.0;
+      roll = _n(0.2);
+      pitch = 82 + _n(0.3);
+      yaw = _windDir + td * 25;
     }
+    yaw = yaw % 360;
 
     double pressure =
         1013.25 * math.pow(1.0 - (math.max(0.0, alt) / 44330.0), 5.255);
@@ -148,13 +215,11 @@ class FlightProfile {
     final volt =
         _r(4.20 - (math.min(elapsed, 110.0) * 0.002) + _u(-0.02, 0.02), 2);
 
-    final driftFactor = math.min(cycleTime / 90.0, 1.0) * 0.02;
-    final angle = elapsed * 0.35;
-    final gpsLat = _r(
-        kSimBaseLat + driftFactor * math.sin(angle) + _u(-0.00005, 0.00005), 6);
+    final latR = kSimBaseLat * math.pi / 180;
+    final gpsLat = _r(kSimBaseLat + north / 110574.0 + _n(0.000004), 6);
     final gpsLon = _r(
-        kSimBaseLon + driftFactor * math.cos(angle) + _u(-0.00005, 0.00005), 6);
-    final gpsAlt = _r(math.max(0.0, alt) + _u(-2.0, 2.0), 1);
+        kSimBaseLon + east / (111320.0 * math.cos(latR)) + _n(0.000004), 6);
+    final gpsAlt = _r(math.max(0.0, alt) + 5 + _n(1.5), 1);
 
     final sec = elapsed.floor();
     final mt = '${(sec ~/ 3600).toString().padLeft(2, '0')}:'
@@ -171,6 +236,7 @@ class FlightProfile {
   }
 
   double _u(double a, double b) => a + _rng.nextDouble() * (b - a);
+  double _n(double s) => _u(-s, s);
   double _r(double v, int d) {
     final m = math.pow(10, d);
     return (v * m).round() / m;
@@ -301,7 +367,8 @@ class EmbeddedSimulator {
       } catch (_) {
         break;
       }
-      await Future.delayed(const Duration(seconds: 1));
+      await Future.delayed(
+          Duration(milliseconds: (1000 / kSimPacketHz).round()));
     }
     _onDisconnect();
   }
@@ -502,9 +569,6 @@ class _GcsHomeState extends State<GcsHome> {
     );
   }
 
-  // =========================================================
-  // SAVE CSV — MANUAL (dipicu user, hanya 20 data terbaru)
-  // =========================================================
   void _onSaveCsv() {
     final n = logger.save(service.history);
 
@@ -627,7 +691,7 @@ class _GcsHomeState extends State<GcsHome> {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Text(
-                'Ambaload Ground Control Station',
+                'EEPISAT Ground Control Station',
                 style: TextStyle(
                   color: palette.text,
                   fontSize: 17,
@@ -857,7 +921,7 @@ class _GcsHomeState extends State<GcsHome> {
   // =========================================================
   Widget _buildTabView() {
     return DefaultTabController(
-      length: 4,
+      length: 3,
       child: Container(
         margin: const EdgeInsets.all(14),
         decoration: BoxDecoration(
@@ -878,13 +942,8 @@ class _GcsHomeState extends State<GcsHome> {
                   iconMargin: EdgeInsets.only(bottom: 2),
                 ),
                 Tab(
-                  icon: Icon(Icons.map_outlined, size: 16),
-                  text: 'Maps',
-                  iconMargin: EdgeInsets.only(bottom: 2),
-                ),
-                Tab(
-                  icon: Icon(Icons.view_in_ar_outlined, size: 16),
-                  text: '3D Model',
+                  icon: Icon(Icons.public, size: 16),
+                  text: 'Map 3D',
                   iconMargin: EdgeInsets.only(bottom: 2),
                 ),
                 Tab(
@@ -899,8 +958,7 @@ class _GcsHomeState extends State<GcsHome> {
                 physics: const NeverScrollableScrollPhysics(),
                 children: [
                   _buildDashboardTab(),
-                  _buildMapCameraTab(),
-                  _build3DTab(),
+                  _buildMap3DTab(),
                   BatteryPanel(
                     palette: palette,
                     latest: service.latest,
@@ -945,29 +1003,16 @@ class _GcsHomeState extends State<GcsHome> {
                 ),
                 const SizedBox(width: 12),
                 Expanded(
-                  flex: 4,
-                  child: MapView(
+                  flex: 8,
+                  child: Map3DView(
+                    key: const ValueKey('map3d-dash'),
                     palette: palette,
                     data: service.latest,
                     history: service.history,
+                    compact: true,
+                    fallbackLat: kSimBaseLat,
+                    fallbackLon: kSimBaseLon,
                   ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  flex: 4,
-                  child: _webViewSupported
-                      ? Model3DGlbView(
-                          key: const ValueKey('payload3d-dash'),
-                          palette: palette,
-                          data: service.latest,
-                          assetPath: 'assets/models/payload.glb',
-                        )
-                      : Model3DNativeView(
-                          key: const ValueKey('payload3d-dash-native'),
-                          palette: palette,
-                          data: service.latest,
-                          assetPath: 'assets/models/payload.glb',
-                        ),
                 ),
               ],
             ),
@@ -1145,8 +1190,9 @@ class _GcsHomeState extends State<GcsHome> {
                     margin:
                         EdgeInsets.only(right: i < phases.length - 1 ? 4 : 0),
                     decoration: BoxDecoration(
-                      color:
-                          i <= cur ? stateColor : stateColor.withOpacity(0.18),
+                      color: i <= cur
+                          ? stateColor
+                          : stateColor.withValues(alpha: 0.18),
                       borderRadius: BorderRadius.circular(3),
                     ),
                   ),
@@ -1185,13 +1231,14 @@ class _GcsHomeState extends State<GcsHome> {
       decoration: BoxDecoration(
         gradient: LinearGradient(
           colors: [
-            stateColor.withOpacity(0.18),
-            stateColor.withOpacity(0.04),
+            stateColor.withValues(alpha: 0.18),
+            stateColor.withValues(alpha: 0.04),
           ],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
-        border: Border.all(color: stateColor.withOpacity(0.4), width: 1.5),
+        border:
+            Border.all(color: stateColor.withValues(alpha: 0.4), width: 1.5),
         borderRadius: BorderRadius.circular(14),
       ),
       child: Column(
@@ -1204,7 +1251,7 @@ class _GcsHomeState extends State<GcsHome> {
                 width: 44,
                 height: 44,
                 decoration: BoxDecoration(
-                  color: stateColor.withOpacity(0.2),
+                  color: stateColor.withValues(alpha: 0.2),
                   shape: BoxShape.circle,
                 ),
                 child: Icon(_stateIcon(lost ? null : t?.state),
@@ -1245,7 +1292,7 @@ class _GcsHomeState extends State<GcsHome> {
             ],
           ),
           phaseBar(),
-          Divider(height: 1, color: stateColor.withOpacity(0.25)),
+          Divider(height: 1, color: stateColor.withValues(alpha: 0.25)),
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -1306,9 +1353,9 @@ class _GcsHomeState extends State<GcsHome> {
   }
 
   // =========================================================
-  // TAB 2: MAPS
+  // TAB 2: MAP 3D (peta + model payload digabung)
   // =========================================================
-  Widget _buildMapCameraTab() {
+  Widget _buildMap3DTab() {
     return Padding(
       padding: const EdgeInsets.all(16),
       child: Row(
@@ -1318,12 +1365,15 @@ class _GcsHomeState extends State<GcsHome> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _section('PAYLOAD LOCATION'),
+                _section('PAYLOAD 3D TRACKING'),
                 Expanded(
-                  child: MapView(
+                  child: Map3DView(
+                    key: const ValueKey('map3d-tab'),
                     palette: palette,
                     data: service.latest,
                     history: service.history,
+                    fallbackLat: kSimBaseLat,
+                    fallbackLon: kSimBaseLon,
                   ),
                 ),
               ],
@@ -1337,11 +1387,20 @@ class _GcsHomeState extends State<GcsHome> {
               children: [
                 _section('GPS TELEMETRY'),
                 Expanded(
+                  flex: 3,
                   child: GpsPanel(palette: palette, data: service.latest),
                 ),
                 const SizedBox(height: 12),
+                _section('ATTITUDE DATA'),
+                Expanded(
+                  flex: 3,
+                  child: SingleChildScrollView(
+                    child: _buildAttitudeNumericPanel(),
+                  ),
+                ),
+                const SizedBox(height: 12),
                 _section(kUseEmbeddedSimulator ? 'SIMULATOR LOG' : 'LoRa LOG'),
-                Expanded(child: _buildSimLog()),
+                Expanded(flex: 2, child: _buildSimLog()),
               ],
             ),
           ),
@@ -1385,54 +1444,6 @@ class _GcsHomeState extends State<GcsHome> {
                 );
               },
             ),
-    );
-  }
-
-  // =========================================================
-  // TAB 3: 3D MODEL
-  // =========================================================
-  Widget _build3DTab() {
-    return Padding(
-      padding: const EdgeInsets.all(16),
-      child: Row(
-        children: [
-          Expanded(
-            flex: 3,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _section('PAYLOAD 3D MODEL'),
-                Expanded(
-                  child: _webViewSupported
-                      ? Model3DGlbView(
-                          key: const ValueKey('payload3d'),
-                          palette: palette,
-                          data: service.latest,
-                          assetPath: 'assets/models/payload.glb',
-                        )
-                      : Model3DNativeView(
-                          key: const ValueKey('payload3d-native'),
-                          palette: palette,
-                          data: service.latest,
-                          assetPath: 'assets/models/payload.glb',
-                        ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 16),
-          Expanded(
-            flex: 2,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _section('ATTITUDE DATA'),
-                Expanded(child: _buildAttitudeNumericPanel()),
-              ],
-            ),
-          ),
-        ],
-      ),
     );
   }
 
@@ -1566,7 +1577,7 @@ class _GcsHomeState extends State<GcsHome> {
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
           decoration: BoxDecoration(
-            color: enabled ? p.accent.withOpacity(0.15) : p.panelAlt,
+            color: enabled ? p.accent.withValues(alpha: 0.15) : p.panelAlt,
             border: Border.all(
               color: enabled ? p.accent : p.border,
             ),
