@@ -20,6 +20,7 @@ import 'widgets/alert_bar.dart';
 import 'widgets/battery_panel.dart';
 import 'widgets/command_panel.dart';
 import 'widgets/connection_indicator.dart';
+import 'widgets/flight_progress_bar.dart';
 import 'widgets/gps_panel.dart';
 import 'widgets/live_chart.dart';
 import 'widgets/map_3d_view.dart';
@@ -480,6 +481,11 @@ class _GcsHomeState extends State<GcsHome> {
   int _lastTotal = -1;
   DateTime? _lastPacketAt;
 
+  // Jejak proses misi untuk bar progres di Dashboard.
+  final Map<String, String> _phaseTimes = {};
+  double? _maxAlt;
+  String? _lastState;
+
   late final CommandService cmd = CommandService(
       host: service.host, port: kCommandPort, teamId: kSimTeamId);
 
@@ -545,9 +551,28 @@ class _GcsHomeState extends State<GcsHome> {
     if (service.totalReceived > 0 && service.totalReceived != _lastTotal) {
       _lastTotal = service.totalReceived;
       _lastPacketAt = DateTime.now();
+      final t = service.latest;
+      if (t != null) _trackPhase(t);
     }
     _runAlerts();
     if (mounted) setState(() {});
+  }
+
+  /// Catat mission time saat tiap fase pertama kali muncul dan
+  /// ketinggian tertinggi. Direset saat kembali ke LAUNCH_PAD.
+  void _trackPhase(Telemetry t) {
+    final st = t.state.trim().toUpperCase();
+    if (st == 'LAUNCH_PAD' && _lastState != null && _lastState != 'LAUNCH_PAD') {
+      _phaseTimes.clear();
+      _maxAlt = null;
+    }
+    if (kFlightPhases.contains(st)) {
+      _phaseTimes.putIfAbsent(st, () => t.missionTime);
+    }
+    if (t.altitude.isFinite && (_maxAlt == null || t.altitude > _maxAlt!)) {
+      _maxAlt = t.altitude;
+    }
+    _lastState = st;
   }
 
   bool get _signalLost {
@@ -986,13 +1011,19 @@ class _GcsHomeState extends State<GcsHome> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          FlightProgressBar(
+            palette: palette,
+            data: t,
+            signalLost: _signalLost,
+            phaseTimes: _phaseTimes,
+            maxAltitude: _maxAlt,
+          ),
+          const SizedBox(height: 12),
           SizedBox(
             height: 380,
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Expanded(flex: 3, child: _buildHeroStatus(t)),
-                const SizedBox(width: 12),
                 Expanded(
                   flex: 6,
                   child: CommandPanel(
@@ -1003,7 +1034,7 @@ class _GcsHomeState extends State<GcsHome> {
                 ),
                 const SizedBox(width: 12),
                 Expanded(
-                  flex: 8,
+                  flex: 9,
                   child: Map3DView(
                     key: const ValueKey('map3d-dash'),
                     palette: palette,
@@ -1092,249 +1123,6 @@ class _GcsHomeState extends State<GcsHome> {
         ),
       ],
     );
-  }
-
-  Widget _buildHeroStatus(Telemetry? t) {
-    final lost = _signalLost;
-    Color stateColor;
-    switch (lost ? '' : (t?.state ?? '')) {
-      case 'LAUNCH_PAD':
-        stateColor = palette.textDim;
-        break;
-      case 'ASCENT':
-        stateColor = palette.ok;
-        break;
-      case 'APOGEE':
-        stateColor = palette.warn;
-        break;
-      case 'DESCENT':
-        stateColor = palette.accent;
-        break;
-      case 'LANDED':
-        stateColor = palette.accent2;
-        break;
-      default:
-        stateColor = palette.textDim;
-    }
-
-    Widget stat(String label, String value, {String? unit}) {
-      return Expanded(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            FittedBox(
-              fit: BoxFit.scaleDown,
-              alignment: Alignment.centerLeft,
-              child: Text(
-                label,
-                maxLines: 1,
-                style: TextStyle(
-                  color: palette.textDim,
-                  fontSize: 9,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 1.2,
-                ),
-              ),
-            ),
-            const SizedBox(height: 4),
-            FittedBox(
-              fit: BoxFit.scaleDown,
-              alignment: Alignment.centerLeft,
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.baseline,
-                textBaseline: TextBaseline.alphabetic,
-                children: [
-                  Text(
-                    value,
-                    style: TextStyle(
-                      color: palette.text,
-                      fontSize: 20,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                  if (unit != null) ...[
-                    const SizedBox(width: 3),
-                    Text(
-                      unit,
-                      style: TextStyle(
-                        color: palette.textDim,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-          ],
-        ),
-      );
-    }
-
-    Widget phaseBar() {
-      const phases = ['LAUNCH_PAD', 'ASCENT', 'APOGEE', 'DESCENT', 'LANDED'];
-      const names = ['PAD', 'ASCENT', 'APOGEE', 'DESCENT', 'LANDED'];
-      final cur = lost ? -1 : phases.indexOf(t?.state ?? '');
-      return Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            children: [
-              for (var i = 0; i < phases.length; i++)
-                Expanded(
-                  child: Container(
-                    height: 5,
-                    margin:
-                        EdgeInsets.only(right: i < phases.length - 1 ? 4 : 0),
-                    decoration: BoxDecoration(
-                      color: i <= cur
-                          ? stateColor
-                          : stateColor.withValues(alpha: 0.18),
-                      borderRadius: BorderRadius.circular(3),
-                    ),
-                  ),
-                ),
-            ],
-          ),
-          const SizedBox(height: 6),
-          Row(
-            children: [
-              for (var i = 0; i < phases.length; i++)
-                Expanded(
-                  child: FittedBox(
-                    fit: BoxFit.scaleDown,
-                    alignment: Alignment.centerLeft,
-                    child: Text(
-                      names[i],
-                      maxLines: 1,
-                      style: TextStyle(
-                        color: i == cur ? stateColor : palette.textDim,
-                        fontSize: 8,
-                        fontWeight:
-                            i == cur ? FontWeight.w800 : FontWeight.w600,
-                        letterSpacing: 0.6,
-                      ),
-                    ),
-                  ),
-                ),
-            ],
-          ),
-        ],
-      );
-    }
-
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [
-            stateColor.withValues(alpha: 0.18),
-            stateColor.withValues(alpha: 0.04),
-          ],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        border:
-            Border.all(color: stateColor.withValues(alpha: 0.4), width: 1.5),
-        borderRadius: BorderRadius.circular(14),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Row(
-            children: [
-              Container(
-                width: 44,
-                height: 44,
-                decoration: BoxDecoration(
-                  color: stateColor.withValues(alpha: 0.2),
-                  shape: BoxShape.circle,
-                ),
-                child: Icon(_stateIcon(lost ? null : t?.state),
-                    color: stateColor, size: 24),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      'FLIGHT STATE',
-                      style: TextStyle(
-                        color: palette.textDim,
-                        fontSize: 9,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 1.2,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    FittedBox(
-                      fit: BoxFit.scaleDown,
-                      alignment: Alignment.centerLeft,
-                      child: Text(
-                        lost ? 'NA' : (t?.state ?? 'WAITING'),
-                        style: TextStyle(
-                          color: stateColor,
-                          fontSize: 24,
-                          fontWeight: FontWeight.w800,
-                          letterSpacing: 1.2,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          phaseBar(),
-          Divider(height: 1, color: stateColor.withValues(alpha: 0.25)),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              stat(
-                  'ALTITUDE',
-                  lost
-                      ? 'NA'
-                      : (t == null ? '—' : t.altitude.toStringAsFixed(1)),
-                  unit: lost ? null : 'm'),
-              const SizedBox(width: 6),
-              stat(
-                  'MISSION TIME', lost ? 'NA' : (t?.missionTime ?? '--:--:--')),
-              const SizedBox(width: 6),
-              stat(
-                  'PACKET',
-                  lost
-                      ? 'NA'
-                      : (t == null
-                          ? '—'
-                          : '#${t.packetCount.toString().padLeft(4, '0')}')),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  IconData _stateIcon(String? state) {
-    switch (state) {
-      case 'LAUNCH_PAD':
-        return Icons.rocket_launch_outlined;
-      case 'ASCENT':
-        return Icons.arrow_upward;
-      case 'APOGEE':
-        return Icons.vertical_align_top;
-      case 'DESCENT':
-        return Icons.paragliding;
-      case 'LANDED':
-        return Icons.flag;
-      default:
-        return Icons.hourglass_empty;
-    }
   }
 
   Widget _section(String text) {

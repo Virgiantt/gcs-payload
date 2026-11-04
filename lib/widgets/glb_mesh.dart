@@ -81,13 +81,18 @@ class MeshData {
 
   /// Memuat GLB dari asset. Parsing jalan di isolate terpisah supaya UI
   /// tidak macet. Kalau gagal, dipakai model tabung CanSat bawaan.
-  static Future<MeshData> load(String asset, {int maxTriangles = 3000}) {
-    return _cache.putIfAbsent('$asset|$maxTriangles', () async {
+  static Future<MeshData> load(
+    String asset, {
+    int maxTriangles = 3000,
+    bool alignLongAxis = true,
+  }) {
+    return _cache.putIfAbsent('$asset|$maxTriangles|$alignLongAxis', () async {
       try {
         final data = await rootBundle.load(asset);
         final bytes =
             data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
-        final mesh = await compute(_parseGlbEntry, (bytes, maxTriangles));
+        final mesh = await compute(
+            _parseGlbEntry, (bytes, maxTriangles, alignLongAxis));
         if (mesh != null) {
           debugPrint('[3D] $asset dimuat: ${mesh.triangleCount} segitiga');
           return mesh;
@@ -140,10 +145,10 @@ class MeshData {
 // PARSER GLB (glTF 2.0 biner)
 // =========================================================
 
-MeshData? _parseGlbEntry((Uint8List, int) args) {
+MeshData? _parseGlbEntry((Uint8List, int, bool) args) {
   final raw = _GlbReader(args.$1).read();
   if (raw == null || raw.idx.isEmpty) return null;
-  return _buildMesh(raw, args.$2);
+  return _buildMesh(raw, args.$2, args.$3);
 }
 
 class _RawMesh {
@@ -389,7 +394,7 @@ Float64List _mul4(Float64List a, Float64List b) {
 }
 
 /// Normalisasi ukuran lalu sederhanakan mesh bila segitiganya terlalu banyak.
-MeshData _buildMesh(_RawMesh r, int maxTris) {
+MeshData _buildMesh(_RawMesh r, int maxTris, bool align) {
   final vc = r.pos.length ~/ 3;
   var minX = double.infinity, minY = double.infinity, minZ = double.infinity;
   var maxX = -double.infinity, maxY = -double.infinity, maxZ = -double.infinity;
@@ -412,10 +417,43 @@ MeshData _buildMesh(_RawMesh r, int maxTris) {
     pos[i * 3 + 1] = (r.pos[i * 3 + 1] - cy) * inv;
     pos[i * 3 + 2] = (r.pos[i * 3 + 2] - cz) * inv;
   }
+  if (align) _alignLongAxisToY(pos);
   final idx = Uint32List.fromList(r.idx);
   final col = Int32List.fromList(r.col);
   if (idx.length ~/ 3 <= maxTris) return MeshData(pos, idx, col);
   return _cluster(pos, idx, col, maxTris);
+}
+
+/// Ekspor CAD sering membuat sumbu panjang payload di X atau Z.
+/// Fungsi ini memutar mesh supaya sumbu terpanjang menjadi Y (tegak).
+void _alignLongAxisToY(Float32List pos) {
+  final n = pos.length ~/ 3;
+  final lo = [double.infinity, double.infinity, double.infinity];
+  final hi = [-double.infinity, -double.infinity, -double.infinity];
+  for (var i = 0; i < n; i++) {
+    for (var a = 0; a < 3; a++) {
+      final v = pos[i * 3 + a];
+      if (v < lo[a]) lo[a] = v;
+      if (v > hi[a]) hi[a] = v;
+    }
+  }
+  final dx = hi[0] - lo[0], dy = hi[1] - lo[1], dz = hi[2] - lo[2];
+  if (dy >= dx && dy >= dz) return;
+  final alongX = dx >= dz;
+  for (var i = 0; i < n; i++) {
+    final x = pos[i * 3], y = pos[i * 3 + 1], z = pos[i * 3 + 2];
+    if (alongX) {
+      // Putar +90 derajat pada Z: X menjadi Y.
+      pos[i * 3] = -y;
+      pos[i * 3 + 1] = x;
+    } else {
+      // Putar -90 derajat pada X: Z menjadi Y.
+      pos[i * 3 + 1] = z;
+      pos[i * 3 + 2] = -y;
+    }
+  }
+  debugPrint('[3D] Sumbu panjang model ada di ${alongX ? 'X' : 'Z'}, '
+      'diputar menjadi tegak');
 }
 
 /// Penyederhanaan vertex clustering: vertex dalam satu sel grid digabung.

@@ -74,128 +74,104 @@ class _MapViewState extends State<MapView> {
       clipBehavior: Clip.hardEdge,
       child: Stack(
         children: [
-          Transform(
-            transform: Matrix4.identity()
-              ..setEntry(3, 2, 0.0015)
-              ..rotateX(0.7)
-              ..rotateY(-0.06),
-            alignment: Alignment.center,
-            child: FlutterMap(
-              mapController: _mapController,
-              options: MapOptions(
-                initialCenter: center,
-                initialZoom: 16,
-                minZoom: 3,
-                maxZoom: 19,
-                backgroundColor: palette.panelAlt,
-                onPositionChanged: (position, hasGesture) {
-                  if (hasGesture && _autoFollow) {
-                    setState(() => _autoFollow = false);
-                  }
-                },
+          FlutterMap(
+            mapController: _mapController,
+            options: MapOptions(
+              initialCenter: center,
+              initialZoom: 16,
+              minZoom: 3,
+              maxZoom: 19,
+              backgroundColor: palette.panelAlt,
+              onPositionChanged: (position, hasGesture) {
+                if (hasGesture && _autoFollow) {
+                  setState(() => _autoFollow = false);
+                }
+              },
+            ),
+            children: [
+              TileLayer(
+                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                userAgentPackageName: 'com.eepisat.gcs',
               ),
-              children: [
-                TileLayer(
-                  urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                  userAgentPackageName: 'com.eepisat.gcs',
+
+              // ============ TRAIL GLOW (bayangan tebal di bawah) ============
+              if (trailPoints.length >= 2)
+                PolylineLayer(
+                  polylines: [
+                    Polyline(
+                      points: trailPoints,
+                      strokeWidth: 12,
+                      color: palette.accent.withOpacity(0.15),
+                    ),
+                  ],
                 ),
 
-                // ============ TRAIL GLOW (bayangan tebal di bawah) ============
-                if (trailPoints.length >= 2)
-                  PolylineLayer(
-                    polylines: [
-                      Polyline(
-                        points: trailPoints,
-                        strokeWidth: 12,
-                        color: palette.accent.withValues(alpha: 0.15),
-                      ),
-                    ],
-                  ),
+              // ============ TRAIL UTAMA (garis solid) ============
+              if (trailPoints.length >= 2)
+                PolylineLayer(
+                  polylines: [
+                    Polyline(
+                      points: trailPoints,
+                      strokeWidth: 4,
+                      color: palette.accent,
+                      borderStrokeWidth: 1,
+                      borderColor: Colors.white.withOpacity(0.8),
+                    ),
+                  ],
+                ),
 
-                // ============ TRAIL UTAMA (garis solid) ============
-                if (trailPoints.length >= 2)
-                  PolylineLayer(
-                    polylines: [
-                      Polyline(
-                        points: trailPoints,
-                        strokeWidth: 4,
-                        color: palette.accent,
-                        borderStrokeWidth: 1,
-                        borderColor: Colors.white.withValues(alpha: 0.8),
-                      ),
-                    ],
-                  ),
-
-                // ============ START MARKER (titik awal) ============
-                if (trailPoints.isNotEmpty)
-                  MarkerLayer(
-                    markers: [
-                      Marker(
-                        point: trailPoints.first,
-                        width: 26,
-                        height: 26,
-                        child: Container(
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: palette.ok.withValues(alpha: 0.9),
-                            border: Border.all(color: Colors.white, width: 2),
-                          ),
-                          child: const Icon(
-                            Icons.flag,
-                            color: Colors.white,
-                            size: 12,
-                          ),
+              // ============ START MARKER (titik awal) ============
+              if (trailPoints.isNotEmpty)
+                MarkerLayer(
+                  markers: [
+                    Marker(
+                      point: trailPoints.first,
+                      width: 26,
+                      height: 26,
+                      child: Container(
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: palette.ok.withOpacity(0.9),
+                          border: Border.all(color: Colors.white, width: 2),
+                        ),
+                        child: const Icon(
+                          Icons.flag,
+                          color: Colors.white,
+                          size: 12,
                         ),
                       ),
-                    ],
-                  ),
-
-                // ============ CIRCLE AREA ============
-                if (t != null)
-                  CircleLayer(
-                    circles: [
-                      CircleMarker(
-                        point: center,
-                        radius: 30,
-                        useRadiusInMeter: true,
-                        color: palette.accent.withValues(alpha: 0.12),
-                        borderColor: palette.accent.withValues(alpha: 0.5),
-                        borderStrokeWidth: 1.5,
-                      ),
-                    ],
-                  ),
-
-                // ============ CURRENT POSITION MARKER ============
-                if (t != null)
-                  MarkerLayer(
-                    markers: [
-                      Marker(
-                        point: center,
-                        width: 72,
-                        height: 72,
-                        child: _payloadMarker(palette, t),
-                      ),
-                    ],
-                  ),
-              ],
-            ),
-          ),
-          Positioned.fill(
-            child: IgnorePointer(
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    colors: [
-                      Colors.black.withValues(alpha: 0.10),
-                      Colors.transparent,
-                      Colors.black.withValues(alpha: 0.16),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
-              ),
-            ),
+
+              // ============ CIRCLE AREA ============
+              if (t != null)
+                CircleLayer(
+                  circles: [
+                    CircleMarker(
+                      point: center,
+                      radius: 30,
+                      useRadiusInMeter: true,
+                      color: palette.accent.withOpacity(0.12),
+                      borderColor: palette.accent.withOpacity(0.5),
+                      borderStrokeWidth: 1.5,
+                    ),
+                  ],
+                ),
+
+              // ============ CURRENT POSITION MARKER ============
+              if (t != null)
+                MarkerLayer(
+                  markers: [
+                    Marker(
+                      point: center,
+                      width: 50,
+                      height: 50,
+                      child: _payloadMarker(palette, t),
+                    ),
+                  ],
+                ),
+            ],
           ),
 
           Positioned(
@@ -204,7 +180,7 @@ class _MapViewState extends State<MapView> {
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
               decoration: BoxDecoration(
-                color: palette.panel.withValues(alpha: 0.92),
+                color: palette.panel.withOpacity(0.92),
                 border: Border.all(color: palette.border),
                 borderRadius: BorderRadius.circular(8),
               ),
@@ -228,7 +204,7 @@ class _MapViewState extends State<MapView> {
                 padding:
                     const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                 decoration: BoxDecoration(
-                  color: palette.panel.withValues(alpha: 0.92),
+                  color: palette.panel.withOpacity(0.92),
                   border: Border.all(color: palette.border),
                   borderRadius: BorderRadius.circular(8),
                 ),
@@ -309,7 +285,7 @@ class _MapViewState extends State<MapView> {
                 padding:
                     const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                 decoration: BoxDecoration(
-                  color: palette.panel.withValues(alpha: 0.92),
+                  color: palette.panel.withOpacity(0.92),
                   border: Border.all(color: palette.border),
                   borderRadius: BorderRadius.circular(8),
                 ),
@@ -359,74 +335,57 @@ class _MapViewState extends State<MapView> {
   }
 
   Widget _payloadMarker(AppPalette palette, Telemetry t) {
-    final yaw = t.yaw * math.pi / 180.0;
-    final pitch = t.pitch * math.pi / 180.0;
-    final roll = t.roll * math.pi / 180.0;
-
-    return Transform(
+    return Stack(
       alignment: Alignment.center,
-      transform: Matrix4.identity()
-        ..setEntry(3, 2, 0.0012)
-        ..rotateX(pitch)
-        ..rotateY(roll)
-        ..rotateZ(yaw),
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          Container(
-            width: 56,
-            height: 56,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: palette.accent.withValues(alpha: 0.18),
-              boxShadow: [
-                BoxShadow(
-                  color: palette.accent.withValues(alpha: 0.45),
-                  blurRadius: 18,
-                  spreadRadius: 2,
-                ),
-              ],
-            ),
+      children: [
+        Container(
+          width: 50,
+          height: 50,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: palette.accent.withOpacity(0.2),
           ),
-          Transform.rotate(
-            angle: yaw,
-            child: Container(
-              width: 28,
-              height: 74,
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [
-                    Colors.white,
-                    palette.accent,
-                    Colors.black.withValues(alpha: 0.8),
-                  ],
-                ),
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: Colors.white.withValues(alpha: 0.8), width: 1.5),
-                boxShadow: [
-                  BoxShadow(
-                    color: palette.accent.withValues(alpha: 0.55),
-                    blurRadius: 12,
-                    offset: const Offset(0, 4),
-                  ),
-                ],
+        ),
+        Container(
+          width: 32,
+          height: 32,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: palette.accent,
+            border: Border.all(color: Colors.white, width: 3),
+            boxShadow: [
+              BoxShadow(
+                color: palette.accent.withOpacity(0.6),
+                blurRadius: 12,
+                spreadRadius: 2,
               ),
-              alignment: Alignment.center,
-              child: Transform.translate(
-                offset: const Offset(0, -20),
-                child: const Icon(
-                  Icons.navigation,
-                  color: Colors.white,
-                  size: 14,
-                ),
-              ),
-            ),
+            ],
           ),
-        ],
-      ),
+          child: Icon(
+            _stateIcon(t.state),
+            color: Colors.white,
+            size: 16,
+          ),
+        ),
+      ],
     );
+  }
+
+  IconData _stateIcon(String state) {
+    switch (state) {
+      case 'LAUNCH_PAD':
+        return Icons.rocket_launch;
+      case 'ASCENT':
+        return Icons.arrow_upward;
+      case 'APOGEE':
+        return Icons.vertical_align_top;
+      case 'DESCENT':
+        return Icons.paragliding;
+      case 'LANDED':
+        return Icons.flag;
+      default:
+        return Icons.rocket_launch;
+    }
   }
 
   Widget _mapButton({
@@ -445,7 +404,7 @@ class _MapViewState extends State<MapView> {
           width: 36,
           height: 36,
           decoration: BoxDecoration(
-            color: active ? palette.accent : palette.panel.withValues(alpha: 0.95),
+            color: active ? palette.accent : palette.panel.withOpacity(0.95),
             border: Border.all(
               color: active ? palette.accent : palette.border,
             ),

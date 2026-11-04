@@ -1,9 +1,11 @@
+import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
 
 import '../models/telemetry.dart';
@@ -12,16 +14,58 @@ import '../theme/app_theme.dart';
 import 'glb_mesh.dart';
 
 // =========================================================
-// KONFIGURASI (sesuaikan setelah uji dengan payload asli)
+// KONFIGURASI MODEL
 // =========================================================
 
-/// Ukuran fisik payload (m). Model diperbesar otomatis saat kamera jauh.
-const double kPayloadSizeM = 0.31;
+/// Spesifikasi satu model 3D.
+class ModelSpec {
+  const ModelSpec({
+    required this.asset,
+    required this.sizeM,
+    this.screenScale = 1.0,
+    this.autoAlign = true,
+    this.fixXDeg = 0,
+    this.fixYDeg = 0,
+    this.fixZDeg = 0,
+  });
 
-/// Koreksi sumbu model GLB (derajat). Contoh: ekspor CAD Z-up, isi X = -90.
-const double kModelFixXDeg = 0;
-const double kModelFixYDeg = 0;
-const double kModelFixZDeg = 0;
+  final String asset;
+
+  /// Ukuran fisik sisi terpanjang (m). Dipakai saat kamera sangat dekat.
+  final double sizeM;
+
+  /// Pengali ukuran di layar relatif terhadap model lain.
+  final double screenScale;
+
+  /// Putar otomatis supaya sumbu terpanjang tegak.
+  final bool autoAlign;
+
+  /// Koreksi sumbu manual (derajat). Isi fixXDeg = 180 kalau model terbalik.
+  final double fixXDeg, fixYDeg, fixZDeg;
+}
+
+/// Dipakai saat LAUNCH_PAD dan ASCENT.
+const ModelSpec kRocketModel = ModelSpec(
+  asset: 'assets/models/rocket.glb',
+  sizeM: 1.8,
+  screenScale: 1.25,
+);
+
+/// Dipakai mulai APOGEE, saat payload sudah terpisah dari roket.
+const ModelSpec kPayloadModel = ModelSpec(
+  asset: 'assets/models/payload.glb',
+  sizeM: 0.31,
+);
+
+/// State yang berarti payload sudah lepas dari roket.
+const Set<String> kSeparatedStates = {'APOGEE', 'DESCENT', 'LANDED'};
+
+/// State yang berarti payload masih di dalam roket.
+const Set<String> kAttachedStates = {'LAUNCH_PAD', 'ASCENT'};
+
+// =========================================================
+// KONFIGURASI LAIN
+// =========================================================
 
 /// true: yaw dianggap heading kompas (searah jarum jam dari utara).
 const bool kYawClockwise = true;
@@ -34,6 +78,19 @@ const int kMaxModelTriangles = 3000;
 
 /// Radius lingkaran area di tanah (m).
 const double kRangeRingM = 30;
+
+/// Tinggi model di layar sebagai fraksi tinggi panel.
+const double kModelScreenFrac = 0.34;
+const double kModelScreenFracCompact = 0.30;
+
+/// Pilihan pengali ukuran model (tombol "1x" di panel).
+const List<double> kModelScales = [0.6, 1.0, 1.6, 2.4];
+
+/// Resolusi capture relatif terhadap ukuran panel di layar.
+const double kCapturePixelRatio = 2.0;
+
+/// Folder capture, relatif terhadap folder home pengguna.
+const String kCaptureSubdir = 'Pictures/EEPISAT';
 
 const double _fovDeg = 50;
 const double _minDist = 8;
@@ -50,7 +107,9 @@ class Map3DView extends StatefulWidget {
   final AppPalette palette;
   final Telemetry? data;
   final List<Telemetry> history;
-  final String assetPath;
+
+  final ModelSpec rocketModel;
+  final ModelSpec payloadModel;
 
   /// true untuk panel kecil di Dashboard.
   final bool compact;
@@ -59,15 +118,20 @@ class Map3DView extends StatefulWidget {
   final double fallbackLat;
   final double fallbackLon;
 
+  /// Teks di pita bawah gambar capture.
+  final String captureLabel;
+
   const Map3DView({
     super.key,
     required this.palette,
     required this.data,
     this.history = const [],
-    this.assetPath = 'assets/models/payload.glb',
+    this.rocketModel = kRocketModel,
+    this.payloadModel = kPayloadModel,
     this.compact = false,
     this.fallbackLat = -7.275764,
     this.fallbackLon = 112.794317,
+    this.captureLabel = 'EEPISAT Team 1064',
   });
 
   @override
@@ -77,7 +141,13 @@ class Map3DView extends StatefulWidget {
 class _Map3DViewState extends State<Map3DView>
     with SingleTickerProviderStateMixin {
   final TileCache _tiles = TileCache.shared;
-  MeshData? _mesh;
+  final GlobalKey _captureKey = GlobalKey();
+
+  MeshData? _rocketMesh;
+  MeshData? _payloadMesh;
+
+  /// true setelah state APOGEE, DESCENT, atau LANDED terlihat.
+  bool _separated = false;
 
   late final Ticker _ticker;
   Duration _lastTick = Duration.zero;
@@ -99,19 +169,34 @@ class _Map3DViewState extends State<Map3DView>
   V3 _offset = V3.zero;
   double _distAtStart = 180;
 
-  String? _prefetchMsg;
+  // Pesan singkat di atas panel
+  String? _msg;
+  int _msgId = 0;
+
   bool _prefetching = false;
+  bool _capturing = false;
+  bool _flash = false;
+
+  int _scaleIdx = 1;
 
   @override
   void initState() {
     super.initState();
     _ticker = createTicker(_onTick);
     _tiles.addListener(_onTiles);
-    MeshData.load(widget.assetPath, maxTriangles: kMaxModelTriangles)
-        .then((m) {
-      if (mounted) setState(() => _mesh = m);
-    });
+    _loadModel(widget.rocketModel, (m) => _rocketMesh = m);
+    _loadModel(widget.payloadModel, (m) => _payloadMesh = m);
     _ingest();
+  }
+
+  void _loadModel(ModelSpec spec, void Function(MeshData) assign) {
+    MeshData.load(
+      spec.asset,
+      maxTriangles: kMaxModelTriangles,
+      alignLongAxis: spec.autoAlign,
+    ).then((m) {
+      if (mounted) setState(() => assign(m));
+    });
   }
 
   @override
@@ -129,6 +214,14 @@ class _Map3DViewState extends State<Map3DView>
 
   void _onTiles() {
     if (mounted) setState(() {});
+  }
+
+  void _showMsg(String m, {Duration hold = const Duration(seconds: 4)}) {
+    final id = ++_msgId;
+    setState(() => _msg = m);
+    Future.delayed(hold, () {
+      if (mounted && _msgId == id) setState(() => _msg = null);
+    });
   }
 
   // ---------------- Data telemetri ----------------
@@ -198,6 +291,16 @@ class _Map3DViewState extends State<Map3DView>
     }
 
     if (t == null) return;
+
+    // Ganti model berdasarkan flight state. State lain (misalnya kosong
+    // atau rusak) tidak mengubah model yang sedang tampil.
+    final st = t.state.trim().toUpperCase();
+    if (kSeparatedStates.contains(st)) {
+      _separated = true;
+    } else if (kAttachedStates.contains(st)) {
+      _separated = false;
+    }
+
     _gpsFix = _validGps(t);
     if (_gpsFix) {
       final np = _enu(geo, t);
@@ -345,23 +448,125 @@ class _Map3DViewState extends State<Map3DView>
     if (_prefetching) return;
     final g = _geo;
     if (g == null) {
-      setState(() => _prefetchMsg = 'Tunggu GPS fix untuk menentukan area');
-      Future.delayed(const Duration(seconds: 3), () {
-        if (mounted) setState(() => _prefetchMsg = null);
-      });
+      _showMsg('Tunggu GPS fix untuk menentukan area');
       return;
     }
     _prefetching = true;
-    setState(() => _prefetchMsg = 'Mengunduh citra area...');
+    _showMsg('Mengunduh citra area...', hold: const Duration(hours: 1));
     final n = await _tiles.prefetch(g.lat0, g.lon0, onProgress: (done, total) {
-      if (mounted) setState(() => _prefetchMsg = 'Mengunduh $done/$total tile');
+      if (mounted) setState(() => _msg = 'Mengunduh $done/$total tile');
     });
     _prefetching = false;
-    if (!mounted) return;
-    setState(() => _prefetchMsg = '$n tile baru tersimpan ke disk');
-    Future.delayed(const Duration(seconds: 4), () {
-      if (mounted && !_prefetching) setState(() => _prefetchMsg = null);
-    });
+    if (mounted) _showMsg('$n tile baru tersimpan ke disk');
+  }
+
+  // ---------------- Capture ----------------
+  Future<void> _capture() async {
+    if (_capturing) return;
+    _capturing = true;
+    try {
+      // Tunggu frame selesai supaya isi panel sudah tergambar lengkap.
+      await WidgetsBinding.instance.endOfFrame;
+      final ro = _captureKey.currentContext?.findRenderObject();
+      if (ro is! RenderRepaintBoundary) throw 'panel belum siap';
+
+      final raw = await ro.toImage(pixelRatio: kCapturePixelRatio);
+      final framed = await _addFooter(raw, kCapturePixelRatio);
+      raw.dispose();
+      final png = await framed.toByteData(format: ui.ImageByteFormat.png);
+      framed.dispose();
+      if (png == null) throw 'gagal membuat PNG';
+
+      final file = await _captureFile();
+      await file.writeAsBytes(png.buffer.asUint8List());
+
+      if (!mounted) return;
+      setState(() => _flash = true);
+      Future.delayed(const Duration(milliseconds: 140), () {
+        if (mounted) setState(() => _flash = false);
+      });
+      _showMsg('Tersimpan: $kCaptureSubdir/${file.uri.pathSegments.last}');
+    } catch (e) {
+      if (mounted) _showMsg('Capture gagal: $e');
+    } finally {
+      _capturing = false;
+    }
+  }
+
+  static String _two(int n) => n.toString().padLeft(2, '0');
+
+  /// Menambahkan pita info di bawah gambar: waktu, paket, state, posisi.
+  Future<ui.Image> _addFooter(ui.Image img, double ratio) async {
+    final t = widget.data;
+    final now = DateTime.now();
+    final ts = '${now.year}-${_two(now.month)}-${_two(now.day)} '
+        '${_two(now.hour)}:${_two(now.minute)}:${_two(now.second)}';
+    String f(double v) => '${v >= 0 ? '+' : ''}${v.toStringAsFixed(1)}';
+
+    final line1 = '${widget.captureLabel}   $ts';
+    final line2 = t == null
+        ? 'Belum ada data telemetri'
+        : 'Pkt #${t.packetCount.toString().padLeft(4, '0')}  '
+            '${t.missionTime}  ${t.state}  '
+            'Alt ${t.altitude.toStringAsFixed(1)} m  '
+            'Lat ${t.gpsLat.toStringAsFixed(6)}  '
+            'Lon ${t.gpsLon.toStringAsFixed(6)}  '
+            'R ${f(t.roll)}  P ${f(t.pitch)}  Y ${f(t.yaw)}';
+
+    final w = img.width.toDouble();
+    final h = img.height.toDouble();
+    final pad = 10 * ratio;
+
+    TextPainter tp(String s, double size, Color c, FontWeight fw) =>
+        TextPainter(
+          text: TextSpan(
+            text: s,
+            style: TextStyle(
+              color: c,
+              fontSize: size * ratio,
+              fontWeight: fw,
+              fontFamily: 'monospace',
+            ),
+          ),
+          textDirection: TextDirection.ltr,
+          maxLines: 1,
+          ellipsis: '...',
+        )..layout(maxWidth: w - 2 * pad);
+
+    final a = tp(line1, 11, Colors.white, FontWeight.w800);
+    final b = tp(line2, 10, const Color(0xFFB8C4D6), FontWeight.w600);
+    final footerH = (pad * 2 + a.height + b.height + 4 * ratio).ceilToDouble();
+
+    final rec = ui.PictureRecorder();
+    final c = Canvas(rec);
+    c.drawImage(img, Offset.zero, Paint());
+    c.drawRect(Rect.fromLTWH(0, h, w, footerH),
+        Paint()..color = const Color(0xFF0B1220));
+    c.drawRect(Rect.fromLTWH(0, h, w, 2 * ratio),
+        Paint()..color = widget.palette.accent);
+    a.paint(c, Offset(pad, h + pad));
+    b.paint(c, Offset(pad, h + pad + a.height + 4 * ratio));
+    final pic = rec.endRecording();
+    final out = await pic.toImage(img.width, (h + footerH).toInt());
+    pic.dispose();
+    return out;
+  }
+
+  Future<File> _captureFile() async {
+    final home = Platform.environment['HOME'] ??
+        Platform.environment['USERPROFILE'] ??
+        Directory.systemTemp.path;
+    final dir = Directory('$home/$kCaptureSubdir');
+    await dir.create(recursive: true);
+    final now = DateTime.now();
+    final t = widget.data;
+    final stamp = '${now.year}${_two(now.month)}${_two(now.day)}_'
+        '${_two(now.hour)}${_two(now.minute)}${_two(now.second)}';
+    final extra = t == null
+        ? ''
+        : '_pkt${t.packetCount.toString().padLeft(4, '0')}_'
+            '${t.state.replaceAll(RegExp(r'[^A-Za-z0-9]'), '')}';
+    return File('${dir.path}/capture_$stamp$extra.png');
   }
 
   // ---------------- Build ----------------
@@ -370,6 +575,9 @@ class _Map3DViewState extends State<Map3DView>
     final p = widget.palette;
     final t = widget.data;
     final pay = _posC;
+    final spec = _separated ? widget.payloadModel : widget.rocketModel;
+    final mesh = _separated ? _payloadMesh : _rocketMesh;
+
     final scene = _Scene(
       geo: _geo ?? _Geo(widget.fallbackLat, widget.fallbackLon),
       tiles: _tiles,
@@ -381,10 +589,13 @@ class _Map3DViewState extends State<Map3DView>
       roll: _rollC,
       pitch: _pitchC,
       yaw: _yawC,
-      mesh: _mesh,
+      mesh: mesh,
+      spec: spec,
       trail: pay == null ? _trail : [..._trail, pay],
       palette: p,
-      minPx: widget.compact ? 46 : 64,
+      modelFrac: (widget.compact ? kModelScreenFracCompact : kModelScreenFrac) *
+          kModelScales[_scaleIdx] *
+          spec.screenScale,
       dark: p.name == 'dark',
     );
 
@@ -397,69 +608,104 @@ class _Map3DViewState extends State<Map3DView>
       clipBehavior: Clip.hardEdge,
       child: Stack(
         children: [
+          // Semua di dalam boundary ini ikut tertangkap saat capture.
           Positioned.fill(
-            child: Listener(
-              onPointerSignal: _onPointerSignal,
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onScaleStart: (_) => _distAtStart = _dist,
-                onScaleUpdate: _onScaleUpdate,
-                onDoubleTap: _resetView,
-                child: RepaintBoundary(
-                  child: CustomPaint(
-                    painter: _ScenePainter(scene),
-                    size: Size.infinite,
+            child: RepaintBoundary(
+              key: _captureKey,
+              child: Stack(
+                children: [
+                  Positioned.fill(
+                    child: Listener(
+                      onPointerSignal: _onPointerSignal,
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onScaleStart: (_) => _distAtStart = _dist,
+                        onScaleUpdate: _onScaleUpdate,
+                        onDoubleTap: _resetView,
+                        child: RepaintBoundary(
+                          child: CustomPaint(
+                            painter: _ScenePainter(scene),
+                            size: Size.infinite,
+                          ),
+                        ),
+                      ),
+                    ),
                   ),
-                ),
+                  Positioned(
+                    left: 10,
+                    top: 10,
+                    child: _chip(Text(
+                      t == null || !_gpsFix
+                          ? 'Lat --  Lon --'
+                          : 'Lat ${t.gpsLat.toStringAsFixed(6)}  '
+                              'Lon ${t.gpsLon.toStringAsFixed(6)}',
+                      style: _mono(11),
+                    )),
+                  ),
+                  if (t != null && !_gpsFix)
+                    Positioned(
+                      left: 10,
+                      top: 42,
+                      child: _chip(Text('GPS belum fix',
+                          style:
+                              _mono(11, color: p.warn, w: FontWeight.w800))),
+                    ),
+                  if (t != null)
+                    Positioned(right: 10, top: 10, child: _altChip(t)),
+                  Positioned(left: 10, bottom: 10, child: _attChip(t)),
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    bottom: 2,
+                    child: IgnorePointer(
+                      child: Center(
+                        child: Text(
+                          kSatAttribution,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 8,
+                            shadows: [
+                              Shadow(blurRadius: 3, color: Colors.black)
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
-          Positioned(
-            left: 10,
-            top: 10,
-            child: _chip(Text(
-              t == null || !_gpsFix
-                  ? 'Lat --  Lon --'
-                  : 'Lat ${t.gpsLat.toStringAsFixed(6)}  '
-                      'Lon ${t.gpsLon.toStringAsFixed(6)}',
-              style: _mono(11),
-            )),
-          ),
-          if (t != null && !_gpsFix)
-            Positioned(
-              left: 10,
-              top: 42,
-              child: _chip(Text('GPS belum fix',
-                  style: _mono(11, color: p.warn, w: FontWeight.w800))),
-            ),
-          if (t != null)
-            Positioned(right: 10, top: 10, child: _altChip(t)),
-          Positioned(left: 10, bottom: 10, child: _attChip(t)),
+
+          // Di luar boundary: tidak ikut tertangkap.
           Positioned(right: 10, bottom: 10, child: _controls()),
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: 2,
-            child: IgnorePointer(
-              child: Center(
-                child: Text(
-                  kSatAttribution,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 8,
-                    shadows: [Shadow(blurRadius: 3, color: Colors.black)],
-                  ),
-                ),
-              ),
-            ),
-          ),
-          if (_prefetchMsg != null)
+          if (_msg != null)
             Positioned(
               top: 10,
               left: 0,
               right: 0,
-              child: Center(child: _chip(Text(_prefetchMsg!, style: _mono(11)))),
+              child: Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 380),
+                  child: _chip(Text(
+                    _msg!,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.center,
+                    style: _mono(11),
+                  )),
+                ),
+              ),
             ),
+          Positioned.fill(
+            child: IgnorePointer(
+              child: AnimatedOpacity(
+                opacity: _flash ? 0.55 : 0,
+                duration: const Duration(milliseconds: 120),
+                child: const ColoredBox(color: Colors.white),
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -516,7 +762,10 @@ class _Map3DViewState extends State<Map3DView>
           style: _mono(11),
         ),
         if (t != null)
-          Text(t.state, style: _mono(9, color: p.accent, w: FontWeight.w800)),
+          Text(
+            '${t.state}  ·  ${_separated ? 'PAYLOAD' : 'ROCKET'}',
+            style: _mono(9, color: p.accent, w: FontWeight.w800),
+          ),
       ],
     ));
   }
@@ -532,6 +781,10 @@ class _Map3DViewState extends State<Map3DView>
             _toggleFollow,
             active: _follow),
         gap,
+        _btn(Icons.photo_camera_outlined, 'Capture tampilan ke PNG', _capture),
+        gap,
+        _scaleBtn(),
+        gap,
         _btn(Icons.add, 'Perbesar', () => _zoom(0.7)),
         gap,
         _btn(Icons.remove, 'Perkecil', () => _zoom(1.45)),
@@ -546,6 +799,33 @@ class _Map3DViewState extends State<Map3DView>
               'Simpan citra area peluncuran ke disk', _prefetch),
         ],
       ],
+    );
+  }
+
+  Widget _scaleBtn() {
+    final p = widget.palette;
+    final v = kModelScales[_scaleIdx];
+    final label = v == v.roundToDouble() ? '${v.toInt()}x' : '${v}x';
+    return Tooltip(
+      message: 'Ukuran model $label (tap untuk ganti)',
+      child: InkWell(
+        onTap: () => setState(
+            () => _scaleIdx = (_scaleIdx + 1) % kModelScales.length),
+        borderRadius: BorderRadius.circular(8),
+        child: Container(
+          width: 34,
+          height: 34,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: p.panel.withValues(alpha: 0.94),
+            border: Border.all(color: p.border),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Text(label,
+              style: TextStyle(
+                  color: p.accent, fontSize: 11, fontWeight: FontWeight.w800)),
+        ),
+      ),
     );
   }
 
@@ -640,9 +920,10 @@ class _Scene {
     required this.pitch,
     required this.yaw,
     required this.mesh,
+    required this.spec,
     required this.trail,
     required this.palette,
-    required this.minPx,
+    required this.modelFrac,
     required this.dark,
   });
 
@@ -653,9 +934,12 @@ class _Scene {
   final V3? payload;
   final double roll, pitch, yaw;
   final MeshData? mesh;
+  final ModelSpec spec;
   final List<V3> trail;
   final AppPalette palette;
-  final double minPx;
+
+  /// Tinggi minimum model di layar, fraksi dari tinggi panel.
+  final double modelFrac;
   final bool dark;
 }
 
@@ -671,8 +955,8 @@ class _CV {
   final V3 p;
   final double u, v;
 
-  static _CV atNear(_CV a, _CV b) {
-    final t = (_near - a.p.z) / (b.p.z - a.p.z);
+  static _CV atNear(_CV a, _CV b, double near) {
+    final t = (near - a.p.z) / (b.p.z - a.p.z);
     return _CV(a.p + (b.p - a.p) * t, a.u + (b.u - a.u) * t,
         a.v + (b.v - a.v) * t);
   }
@@ -686,6 +970,11 @@ class _ScenePainter extends CustomPainter {
   final _Scene s;
   final _Cam cam = _Cam();
 
+  /// Near plane khusus tanah. Tanah yang terlihat di layar selalu berjarak
+  /// minimal ~0,9 x tinggi kamera, jadi aman dipotong di 0,5 x tinggi kamera.
+  double _gNear = _near;
+  double _minPx = 60;
+
   static final Float64List _ident = Float64List.fromList(
       [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
   static final V3 _light = const V3(-0.35, -0.45, 0.82).normalized();
@@ -693,22 +982,21 @@ class _ScenePainter extends CustomPainter {
   /// glTF (Y atas) ke ENU (Z atas): timur = x, utara = -z, atas = y.
   static final M3 _toEnu =
       M3(Float64List.fromList([1, 0, 0, 0, 0, -1, 0, 1, 0]));
-  static final M3 _fix = M3.rotX(kModelFixXDeg * math.pi / 180) *
-      M3.rotY(kModelFixYDeg * math.pi / 180) *
-      M3.rotZ(kModelFixZDeg * math.pi / 180);
 
   @override
   void paint(Canvas canvas, Size size) {
     if (size.width < 4 || size.height < 4) return;
     canvas.clipRect(Offset.zero & size);
     cam.setup(s.target, s.heading, s.tilt, s.dist, size);
+    _gNear = math.max(_near, math.max(0.0, cam.pos.z) * 0.5);
+    _minPx = s.modelFrac * size.height;
 
     _backdrop(canvas, size);
     _ground(canvas, size);
     final p = s.payload;
     if (p != null) _ring(canvas, p, kRangeRingM);
     _trail(canvas);
-    if (p != null) _payload(canvas, p);
+    if (p != null) _model(canvas, p);
   }
 
   @override
@@ -808,7 +1096,7 @@ class _ScenePainter extends CustomPainter {
         final east = g.east(tileXToLon(r.gx + i / n, z));
         final c = cam.cam(east, north, 0);
         grid[j * (n + 1) + i] = c;
-        if (c.z >= _near) {
+        if (c.z >= _gNear) {
           anyFront = true;
           final o = cam.proj(c);
           minX = math.min(minX, o.dx);
@@ -856,7 +1144,7 @@ class _ScenePainter extends CustomPainter {
 
   /// Segitiga dengan clipping di near plane (Sutherland-Hodgman satu bidang).
   void _tri(List<double> pos, List<double> tex, _CV a, _CV b, _CV c) {
-    final ina = a.p.z >= _near, inb = b.p.z >= _near, inc = c.p.z >= _near;
+    final ina = a.p.z >= _gNear, inb = b.p.z >= _gNear, inc = c.p.z >= _gNear;
     if (!ina && !inb && !inc) return;
     if (ina && inb && inc) {
       _emit(pos, tex, a);
@@ -868,12 +1156,12 @@ class _ScenePainter extends CustomPainter {
     final poly = <_CV>[];
     for (var i = 0; i < 3; i++) {
       final cur = src[i], prev = src[(i + 2) % 3];
-      final ci = cur.p.z >= _near, pi = prev.p.z >= _near;
+      final ci = cur.p.z >= _gNear, pi = prev.p.z >= _gNear;
       if (ci) {
-        if (!pi) poly.add(_CV.atNear(prev, cur));
+        if (!pi) poly.add(_CV.atNear(prev, cur, _gNear));
         poly.add(cur);
       } else if (pi) {
-        poly.add(_CV.atNear(prev, cur));
+        poly.add(_CV.atNear(prev, cur, _gNear));
       }
     }
     for (var i = 1; i + 1 < poly.length; i++) {
@@ -946,7 +1234,7 @@ class _ScenePainter extends CustomPainter {
       }
     }
 
-    // Garis jatuh dari payload ke tanah sebagai penanda ketinggian.
+    // Garis jatuh dari model ke tanah sebagai penanda ketinggian.
     final p = s.payload;
     if (p != null && p.z > 0.5) {
       _line(canvas, [p, V3(p.x, p.y, 0.05)],
@@ -982,18 +1270,19 @@ class _ScenePainter extends CustomPainter {
     return a + (b - a) * t;
   }
 
-  // ---------------- Payload ----------------
-  void _payload(Canvas canvas, V3 p0) {
+  // ---------------- Model (roket atau payload) ----------------
+  void _model(Canvas canvas, V3 p0) {
     final pc = cam.camV(p0);
     if (pc.z < _near) return;
     final accent = s.palette.accent;
     final center = cam.proj(pc);
+    final spec = s.spec;
 
-    // Skala visual: ukuran asli, atau minimal minPx piksel di layar.
-    final size = math.max(kPayloadSizeM, s.minPx * pc.z / cam.focal);
+    // Skala visual: ukuran asli, atau minimal _minPx piksel di layar.
+    final size = math.max(spec.sizeM, _minPx * pc.z / cam.focal);
 
-    canvas.drawCircle(center, s.minPx * 0.55,
-        Paint()..color = accent.withValues(alpha: 0.16));
+    canvas.drawCircle(center, _minPx * 0.62,
+        Paint()..color = accent.withValues(alpha: 0.10));
 
     final mesh = s.mesh;
     if (mesh == null) {
@@ -1010,12 +1299,15 @@ class _ScenePainter extends CustomPainter {
 
     // Urutan rotasi sama dengan model-viewer: Y(yaw) X(pitch) Z(roll).
     const d2r = math.pi / 180;
+    final fix = M3.rotX(spec.fixXDeg * d2r) *
+        M3.rotY(spec.fixYDeg * d2r) *
+        M3.rotZ(spec.fixZDeg * d2r);
     final yawDeg = (kYawClockwise ? -s.yaw : s.yaw) + kYawOffsetDeg;
     final m = (_toEnu *
             M3.rotY(yawDeg * d2r) *
             M3.rotX(s.pitch * d2r) *
             M3.rotZ(s.roll * d2r) *
-            _fix)
+            fix)
         .m;
 
     final vp = mesh.positions;

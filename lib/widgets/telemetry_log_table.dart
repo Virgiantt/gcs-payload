@@ -111,7 +111,7 @@ class _TelemetryLogTableState extends State<TelemetryLogTable> {
           final n = gap > 20 ? 20 : gap; // batasi supaya tabel tidak banjir
           for (var k = 1; k <= n; k++) {
             chrono.add(_R(
-              _naCells(t.teamId, '${prev.packetCount + k}'),
+              _naCells('${t.teamId}', '${prev.packetCount + k}'),
               _Kind.lost,
             ));
           }
@@ -124,7 +124,7 @@ class _TelemetryLogTableState extends State<TelemetryLogTable> {
     final rows = chrono.reversed.toList();
 
     if (widget.signalLost && src.isNotEmpty) {
-      rows.insert(0, _R(_naCells(src.last.teamId, _na), _Kind.lost));
+      rows.insert(0, _R(_naCells('${src.last.teamId}', _na), _Kind.lost));
     } else if (rows.isNotEmpty && rows[0].kind == _Kind.normal) {
       rows[0] = _R(rows[0].cells, _Kind.latest);
     }
