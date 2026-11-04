@@ -5,7 +5,7 @@ import 'package:flutter/material.dart';
 import '../services/alert_service.dart';
 import '../theme/app_theme.dart';
 
-// ---------- helper bersama (bar + dialog log) ----------
+// ---------- helper bersama (bar + pil + dialog log) ----------
 String _two(int n) => n.toString().padLeft(2, '0');
 String _clock(DateTime t) =>
     '${_two(t.hour)}:${_two(t.minute)}:${_two(t.second)}';
@@ -35,6 +35,18 @@ IconData _levelIcon(AlertLevel l) => switch (l) {
       AlertLevel.critical => Icons.error,
     };
 
+/// Teks kejadian terakhir yang sudah pulih, untuk ringkasan.
+String _lastResolved(AlertService svc) {
+  AlertIncident? best;
+  for (final i in svc.incidents) {
+    if (i.endedAt == null) continue;
+    if (best == null || i.endedAt!.isAfter(best.endedAt!)) best = i;
+  }
+  if (best == null) return '';
+  return '  ·  Terakhir: ${best.title} (pulih ${_clock(best.endedAt!)}, '
+      'berlangsung ${_dur(best.duration(DateTime.now()))})';
+}
+
 Widget _tag(String text, Color c, {bool filled = false}) => Container(
       padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
       decoration: BoxDecoration(
@@ -53,6 +65,107 @@ Widget _tag(String text, Color c, {bool filled = false}) => Container(
       ),
     );
 
+/// Membuka dialog Alert log dari mana saja (bar maupun pil di header).
+void showAlertLog(
+  BuildContext context, {
+  required AppPalette palette,
+  required AlertService service,
+}) {
+  showDialog<void>(
+    context: context,
+    builder: (_) => _AlertLogDialog(palette: palette, service: service),
+  );
+}
+
+// =========================================================
+// PIL STATUS (untuk header)
+// =========================================================
+/// Indikator ringkas: level saat ini dan jumlah kejadian di log.
+/// Tap untuk membuka Alert log.
+class AlertStatusPill extends StatelessWidget {
+  final AppPalette palette;
+  final AlertService service;
+
+  /// true: hanya ikon dan angka, untuk layar sempit.
+  final bool iconOnly;
+
+  const AlertStatusPill({
+    super.key,
+    required this.palette,
+    required this.service,
+    this.iconOnly = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final p = palette;
+    final level = service.level;
+    final color = _levelColor(p, level);
+    final logCount = service.incidents.length;
+    final activeCount = service.active.length;
+
+    final tip = level == AlertLevel.normal
+        ? 'Semua sistem normal${_lastResolved(service)}\nTap untuk Alert log'
+        : '$activeCount alert aktif\nTap untuk Alert log';
+
+    return Tooltip(
+      message: tip,
+      child: InkWell(
+        onTap: () => showAlertLog(context, palette: p, service: service),
+        borderRadius: BorderRadius.circular(20),
+        child: Container(
+          height: 34,
+          padding: EdgeInsets.symmetric(horizontal: iconOnly ? 8 : 12),
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: 0.13),
+            border: Border.all(color: color.withValues(alpha: 0.45)),
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(_levelIcon(level), size: 16, color: color),
+              if (!iconOnly) ...[
+                const SizedBox(width: 6),
+                Text(
+                  _levelLabel(level),
+                  style: TextStyle(
+                    color: color,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 1.1,
+                  ),
+                ),
+              ],
+              if (logCount > 0) ...[
+                const SizedBox(width: 7),
+                Container(
+                  constraints: const BoxConstraints(minWidth: 18),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                  decoration: BoxDecoration(
+                    color: color,
+                    borderRadius: BorderRadius.circular(9),
+                  ),
+                  child: Text(
+                    '$logCount',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 10,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 // =========================================================
 // KOTAK PERINGATAN
 // =========================================================
@@ -60,7 +173,16 @@ class AlertBar extends StatefulWidget {
   final AppPalette palette;
   final AlertService service;
 
-  const AlertBar({super.key, required this.palette, required this.service});
+  /// true: bar tidak tampil saat status NORMAL (status cukup dari
+  /// AlertStatusPill di header). Muncul otomatis saat WARNING/CRITICAL.
+  final bool hideWhenNormal;
+
+  const AlertBar({
+    super.key,
+    required this.palette,
+    required this.service,
+    this.hideWhenNormal = true,
+  });
 
   @override
   State<AlertBar> createState() => _AlertBarState();
@@ -110,6 +232,9 @@ class _AlertBarState extends State<AlertBar>
   @override
   Widget build(BuildContext context) {
     final level = svc.level;
+    if (widget.hideWhenNormal && level == AlertLevel.normal) {
+      return const SizedBox.shrink();
+    }
     final color = _levelColor(p, level);
     final alerts = svc.active;
 
@@ -160,7 +285,7 @@ class _AlertBarState extends State<AlertBar>
     Widget summary;
     if (alerts.isEmpty) {
       summary = Text(
-        'Semua sistem normal${_lastResolvedText()}',
+        'Semua sistem normal${_lastResolved(svc)}',
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
         style: TextStyle(
@@ -229,17 +354,6 @@ class _AlertBarState extends State<AlertBar>
         ],
       ),
     );
-  }
-
-  String _lastResolvedText() {
-    AlertIncident? best;
-    for (final i in svc.incidents) {
-      if (i.endedAt == null) continue;
-      if (best == null || i.endedAt!.isAfter(best.endedAt!)) best = i;
-    }
-    if (best == null) return '';
-    return '  ·  Terakhir: ${best.title} (pulih ${_clock(best.endedAt!)}, '
-        'berlangsung ${_dur(best.duration(DateTime.now()))})';
   }
 
   Widget _levelPill(AlertLevel level, Color color) {
@@ -422,7 +536,7 @@ class _AlertBarState extends State<AlertBar>
   Widget _logButton() {
     final total = svc.incidents.length;
     return InkWell(
-      onTap: _showLog,
+      onTap: () => showAlertLog(context, palette: p, service: svc),
       borderRadius: BorderRadius.circular(8),
       child: Container(
         height: 34,
@@ -448,13 +562,6 @@ class _AlertBarState extends State<AlertBar>
           ],
         ),
       ),
-    );
-  }
-
-  void _showLog() {
-    showDialog<void>(
-      context: context,
-      builder: (_) => _AlertLogDialog(palette: p, service: svc),
     );
   }
 }

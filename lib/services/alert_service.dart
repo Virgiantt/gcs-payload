@@ -173,7 +173,7 @@ class AlertService {
         source: AlertSource.telemetry,
         value: 'OFFLINE',
         hint: 'Pastikan laptop satu WiFi dengan receiver, IP/port benar, '
-            'dan token AUTH cocok. Lihat panel LoRa LOG di tab Maps.',
+            'dan token AUTH cocok. Lihat panel LoRa LOG di tab Map 3D.',
       ));
     }
     if (!inGrace && !commandLinkUp) {

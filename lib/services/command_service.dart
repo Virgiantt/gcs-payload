@@ -143,10 +143,13 @@ class CommandService extends ChangeNotifier {
   }
 
   // ---------------- kirim perintah ----------------
-  void send(String rawName) {
+  /// Mengirim perintah dan mengembalikan entri log-nya, supaya pemanggil
+  /// bisa memantau statusnya (SENT, lalu ACK / NACK / TIMEOUT).
+  /// Mengembalikan null kalau nama perintah kosong.
+  CmdLogEntry? send(String rawName) {
     final name =
         rawName.trim().toUpperCase().replaceAll(RegExp(r'[^A-Z0-9_]'), '_');
-    if (name.isEmpty) return;
+    if (name.isEmpty) return null;
 
     final entry = CmdLogEntry(++_seq, name, DateTime.now());
     log.insert(0, entry);
@@ -157,13 +160,13 @@ class CommandService extends ChangeNotifier {
       entry.state = CmdState.rejected;
       entry.detail = 'Sistem belum ARMED';
       _notify();
-      return;
+      return entry;
     }
     if (!connected || _socket == null) {
       entry.state = CmdState.failed;
       entry.detail = 'Command link tidak terhubung';
       _notify();
-      return;
+      return entry;
     }
 
     try {
@@ -172,7 +175,7 @@ class CommandService extends ChangeNotifier {
       entry.state = CmdState.failed;
       entry.detail = '$e';
       _notify();
-      return;
+      return entry;
     }
 
     if (critical) disarm(); // satu kali ARM = satu perintah kritis
@@ -186,6 +189,7 @@ class CommandService extends ChangeNotifier {
       _notify();
     });
     _notify();
+    return entry;
   }
 
   @override

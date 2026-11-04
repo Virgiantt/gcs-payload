@@ -9,6 +9,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
 
 import '../models/telemetry.dart';
+import '../services/flight_track.dart';
 import '../services/tile_cache.dart';
 import '../theme/app_theme.dart';
 import 'glb_mesh.dart';
@@ -83,8 +84,31 @@ const double kRangeRingM = 30;
 const double kModelScreenFrac = 0.34;
 const double kModelScreenFracCompact = 0.30;
 
+/// Saat kamera menjauh, model mengecil bertahap sampai fraksi ini,
+/// supaya di tampilan seluruh lintasan model tidak menutupi tirai.
+const double kModelScreenFracFar = 0.06;
+
+/// Rentang jarak kamera (m) tempat model mengecil: penuh di bawah
+/// [kModelShrinkStartM], paling kecil di atas [kModelShrinkEndM].
+const double kModelShrinkStartM = 300;
+const double kModelShrinkEndM = 1500;
+
 /// Pilihan pengali ukuran model (tombol "1x" di panel).
 const List<double> kModelScales = [0.6, 1.0, 1.6, 2.4];
+
+/// Tirai lintasan (bidang dan garis tegak dari lintasan ke tanah).
+const bool kCurtainDefault = true;
+
+/// Jumlah maksimum garis tegak pada tirai.
+const int kCurtainMaxLines = 140;
+
+/// true: tombol capture memutar kamera ke sudut yang memperlihatkan
+/// seluruh lintasan dari samping, lalu kembali ke sudut semula.
+/// Tahan tombol capture untuk memotret sudut saat ini.
+const bool kCaptureAutoAngle = true;
+
+/// Kemiringan kamera untuk sudut capture otomatis (derajat).
+const double kCaptureTiltDeg = 22;
 
 /// Resolusi capture relatif terhadap ukuran panel di layar.
 const double kCapturePixelRatio = 2.0;
@@ -106,7 +130,9 @@ double _clampD(double v, double lo, double hi) =>
 class Map3DView extends StatefulWidget {
   final AppPalette palette;
   final Telemetry? data;
-  final List<Telemetry> history;
+
+  /// Lintasan penuh penerbangan (dari main.dart).
+  final FlightTrack track;
 
   final ModelSpec rocketModel;
   final ModelSpec payloadModel;
@@ -125,7 +151,7 @@ class Map3DView extends StatefulWidget {
     super.key,
     required this.palette,
     required this.data,
-    this.history = const [],
+    required this.track,
     this.rocketModel = kRocketModel,
     this.payloadModel = kPayloadModel,
     this.compact = false,
@@ -178,6 +204,9 @@ class _Map3DViewState extends State<Map3DView>
   bool _flash = false;
 
   int _scaleIdx = 1;
+
+  bool _curtain = kCurtainDefault;
+  List<_EventMark> _events = const [];
 
   @override
   void initState() {
@@ -239,23 +268,22 @@ class _Map3DViewState extends State<Map3DView>
   static V3 _enu(_Geo g, Telemetry t) =>
       V3(g.east(t.gpsLon), g.north(t.gpsLat), _alt(t));
 
+  static V3 _enuP(_Geo g, TrackPoint p) =>
+      V3(g.east(p.lon), g.north(p.lat), math.max(0.0, p.alt));
+
   void _ingest() {
-    final hist = widget.history;
+    final track = widget.track;
+    final pts = track.points;
     final t = widget.data;
 
-    // Titik asal ENU = titik GPS valid pertama (biasanya launch pad).
+    // Titik asal ENU = titik pertama lintasan (biasanya launch pad).
     var geoChanged = false;
     if (_geo == null) {
-      Telemetry? first;
-      for (final h in hist) {
-        if (_validGps(h)) {
-          first = h;
-          break;
-        }
-      }
-      if (first == null && t != null && _validGps(t)) first = t;
-      if (first != null) {
-        _geo = _Geo(first.gpsLat, first.gpsLon);
+      if (pts.isNotEmpty) {
+        _geo = _Geo(pts.first.lat, pts.first.lon);
+        geoChanged = true;
+      } else if (t != null && _validGps(t)) {
+        _geo = _Geo(t.gpsLat, t.gpsLon);
         geoChanged = true;
       }
     } else if (t != null && _validGps(t)) {
@@ -272,22 +300,23 @@ class _Map3DViewState extends State<Map3DView>
       _trailSig = 0;
     }
 
-    // Trail dihitung ulang hanya saat history berubah.
-    final sig = Object.hash(
-        hist.length, hist.isEmpty ? -1 : hist.last.packetCount, geo.lat0);
+    // Lintasan dan event dihitung ulang hanya saat track berubah.
+    final sig = Object.hash(track.version, geo.lat0, geo.lon0);
     if (sig != _trailSig) {
       _trailSig = sig;
-      final step = math.max(1, hist.length ~/ 1500);
-      final pts = <V3>[];
-      for (var i = 0; i < hist.length; i += step) {
-        if (_validGps(hist[i])) pts.add(_enu(geo, hist[i]));
+      final step = math.max(1, pts.length ~/ 1500);
+      final out = <V3>[];
+      for (var i = 0; i < pts.length; i += step) {
+        out.add(_enuP(geo, pts[i]));
       }
-      if (step > 1 &&
-          (hist.length - 1) % step != 0 &&
-          _validGps(hist.last)) {
-        pts.add(_enu(geo, hist.last));
+      if (pts.isNotEmpty && (pts.length - 1) % step != 0) {
+        out.add(_enuP(geo, pts.last));
       }
-      _trail = pts;
+      _trail = out;
+      _events = [
+        for (final e in track.events)
+          _EventMark(e.label, e.kind, _enuP(geo, pts[e.index])),
+      ];
     }
 
     if (t == null) return;
@@ -422,26 +451,76 @@ class _Map3DViewState extends State<Map3DView>
     });
   }
 
-  void _fitTrail() {
+  void _fitTrail() => _applyOverviewCamera();
+
+  /// Kamera dari samping lintasan: arah pandang tegak lurus arah hanyut,
+  /// launch di kiri, landing di kanan, seluruh lintasan masuk layar.
+  bool _applyOverviewCamera() {
     final pts = _trail;
-    if (pts.length < 2) return;
-    var x0 = double.infinity, y0 = double.infinity;
-    var x1 = -double.infinity, y1 = -double.infinity, zMax = 0.0;
+    if (pts.length < 2) return false;
+
+    var zMax = 0.0;
     for (final p in pts) {
-      x0 = math.min(x0, p.x);
-      y0 = math.min(y0, p.y);
-      x1 = math.max(x1, p.x);
-      y1 = math.max(y1, p.y);
       zMax = math.max(zMax, p.z);
     }
-    final ext = math.max(math.max(x1 - x0, y1 - y0), zMax);
+
+    // Arah hanyut keseluruhan: dari titik awal ke titik akhir.
+    var dx = pts.last.x - pts.first.x, dy = pts.last.y - pts.first.y;
+    if (dx * dx + dy * dy < 400) {
+      dx = 1;
+      dy = 0;
+    }
+    final driftAz = math.atan2(dx, dy) * 180 / math.pi;
+    final heading = (driftAz - 90) % 360;
+
+    final h = heading * math.pi / 180;
+    final right = V3(math.cos(h), -math.sin(h), 0);
+    final fwd = V3(math.sin(h), math.cos(h), 0);
+    var wMin = double.infinity, wMax = -double.infinity;
+    var fMin = double.infinity, fMax = -double.infinity;
+    for (final p in pts) {
+      final w = p.x * right.x + p.y * right.y;
+      final f = p.x * fwd.x + p.y * fwd.y;
+      wMin = math.min(wMin, w);
+      wMax = math.max(wMax, w);
+      fMin = math.min(fMin, f);
+      fMax = math.max(fMax, f);
+    }
+
+    final size = context.size ?? const Size(800, 450);
+    final aspect = size.width / math.max(1.0, size.height);
+    final vHalf = _fovDeg / 2 * math.pi / 180;
+    final hHalf = math.atan(math.tan(vHalf) * aspect);
+    final width = math.max(wMax - wMin, 20.0);
+    final height = math.max(zMax, 20.0);
+    final tilt = kCaptureTiltDeg * math.pi / 180;
+    final dW = width / 2 / math.tan(hHalf);
+    final dH = height / 2 * math.cos(tilt) / math.tan(vHalf);
+    final dist = math.max(dW, dH) * 1.4 + 30;
+
+    final cw = (wMin + wMax) / 2, cf = (fMin + fMax) / 2;
     setState(() {
       _follow = false;
       _offset = V3.zero;
-      _frozen = V3((x0 + x1) / 2, (y0 + y1) / 2, zMax / 2);
-      _dist = _clampD(ext * 1.5 + 80, _minDist, _maxDist);
-      _tilt = 35;
+      _frozen = V3(right.x * cw + fwd.x * cf, right.y * cw + fwd.y * cf,
+          zMax * 0.5);
+      _heading = heading;
+      _tilt = kCaptureTiltDeg;
+      _dist = _clampD(dist, _minDist, _maxDist);
     });
+    return true;
+  }
+
+  /// Menunggu tile untuk sudut kamera baru selesai dimuat (maks 6 detik).
+  Future<void> _waitForTiles() async {
+    await WidgetsBinding.instance.endOfFrame;
+    await WidgetsBinding.instance.endOfFrame;
+    final end = DateTime.now().add(const Duration(seconds: 6));
+    while (DateTime.now().isBefore(end) && _tiles.loadingCount > 0) {
+      await Future.delayed(const Duration(milliseconds: 150));
+    }
+    await Future.delayed(const Duration(milliseconds: 150));
+    await WidgetsBinding.instance.endOfFrame;
   }
 
   Future<void> _prefetch() async {
@@ -461,10 +540,21 @@ class _Map3DViewState extends State<Map3DView>
   }
 
   // ---------------- Capture ----------------
-  Future<void> _capture() async {
+  Future<void> _capture({bool autoAngle = kCaptureAutoAngle}) async {
     if (_capturing) return;
     _capturing = true;
+    final saved = (_heading, _tilt, _dist, _follow, _frozen, _offset);
+    var moved = false;
     try {
+      if (autoAngle) {
+        moved = _applyOverviewCamera();
+        if (moved) {
+          _showMsg('Menyiapkan sudut capture...',
+              hold: const Duration(seconds: 8));
+          await _waitForTiles();
+        }
+      }
+
       // Tunggu frame selesai supaya isi panel sudah tergambar lengkap.
       await WidgetsBinding.instance.endOfFrame;
       final ro = _captureKey.currentContext?.findRenderObject();
@@ -489,6 +579,17 @@ class _Map3DViewState extends State<Map3DView>
     } catch (e) {
       if (mounted) _showMsg('Capture gagal: $e');
     } finally {
+      // Kembalikan kamera ke sudut sebelum capture.
+      if (moved && mounted) {
+        setState(() {
+          _heading = saved.$1;
+          _tilt = saved.$2;
+          _dist = saved.$3;
+          _follow = saved.$4;
+          _frozen = saved.$5;
+          _offset = saved.$6;
+        });
+      }
       _capturing = false;
     }
   }
@@ -503,7 +604,9 @@ class _Map3DViewState extends State<Map3DView>
         '${_two(now.hour)}:${_two(now.minute)}:${_two(now.second)}';
     String f(double v) => '${v >= 0 ? '+' : ''}${v.toStringAsFixed(1)}';
 
-    final line1 = '${widget.captureLabel}   $ts';
+    final apo = widget.track.maxAlt;
+    final line1 = '${widget.captureLabel}   $ts'
+        '${apo == null ? '' : '   Apogee ${apo.toStringAsFixed(1)} m'}';
     final line2 = t == null
         ? 'Belum ada data telemetri'
         : 'Pkt #${t.packetCount.toString().padLeft(4, '0')}  '
@@ -569,6 +672,19 @@ class _Map3DViewState extends State<Map3DView>
     return File('${dir.path}/capture_$stamp$extra.png');
   }
 
+  /// Ukuran model di layar sebagai fraksi tinggi panel, dikecilkan
+  /// bertahap (skala logaritmik) seiring kamera menjauh.
+  double _modelFracForDistance() {
+    final near = widget.compact ? kModelScreenFracCompact : kModelScreenFrac;
+    final t = _clampD(
+      (math.log(_dist) - math.log(kModelShrinkStartM)) /
+          (math.log(kModelShrinkEndM) - math.log(kModelShrinkStartM)),
+      0,
+      1,
+    );
+    return near + (kModelScreenFracFar - near) * t;
+  }
+
   // ---------------- Build ----------------
   @override
   Widget build(BuildContext context) {
@@ -593,7 +709,9 @@ class _Map3DViewState extends State<Map3DView>
       spec: spec,
       trail: pay == null ? _trail : [..._trail, pay],
       palette: p,
-      modelFrac: (widget.compact ? kModelScreenFracCompact : kModelScreenFrac) *
+      events: _events,
+      curtain: _curtain,
+      modelFrac: _modelFracForDistance() *
           kModelScales[_scaleIdx] *
           spec.screenScale,
       dark: p.name == 'dark',
@@ -781,14 +899,29 @@ class _Map3DViewState extends State<Map3DView>
             _toggleFollow,
             active: _follow),
         gap,
-        _btn(Icons.photo_camera_outlined, 'Capture tampilan ke PNG', _capture),
+        _btn(
+          Icons.photo_camera_outlined,
+          'Capture (tap: sudut otomatis, tahan: sudut saat ini)',
+          () => _capture(),
+          onLongPress: () => _capture(autoAngle: false),
+        ),
+        gap,
+        _btn(
+          Icons.view_week_outlined,
+          _curtain ? 'Tirai lintasan: aktif' : 'Tirai lintasan: mati',
+          () => setState(() => _curtain = !_curtain),
+          active: _curtain,
+        ),
         gap,
         _scaleBtn(),
         gap,
-        _btn(Icons.add, 'Perbesar', () => _zoom(0.7)),
-        gap,
-        _btn(Icons.remove, 'Perkecil', () => _zoom(1.45)),
-        gap,
+        // Di panel kecil, zoom cukup lewat scroll atau pinch.
+        if (!widget.compact) ...[
+          _btn(Icons.add, 'Perbesar', () => _zoom(0.7)),
+          gap,
+          _btn(Icons.remove, 'Perkecil', () => _zoom(1.45)),
+          gap,
+        ],
         _btn(top ? Icons.threed_rotation : Icons.map_outlined,
             top ? 'Kembali ke tampilan miring' : 'Lihat dari atas', _toggleTop),
         gap,
@@ -830,12 +963,13 @@ class _Map3DViewState extends State<Map3DView>
   }
 
   Widget _btn(IconData icon, String tip, VoidCallback onTap,
-      {bool active = false}) {
+      {bool active = false, VoidCallback? onLongPress}) {
     final p = widget.palette;
     return Tooltip(
       message: tip,
       child: InkWell(
         onTap: onTap,
+        onLongPress: onLongPress,
         borderRadius: BorderRadius.circular(8),
         child: Container(
           width: 34,
@@ -922,6 +1056,8 @@ class _Scene {
     required this.mesh,
     required this.spec,
     required this.trail,
+    required this.events,
+    required this.curtain,
     required this.palette,
     required this.modelFrac,
     required this.dark,
@@ -936,11 +1072,20 @@ class _Scene {
   final MeshData? mesh;
   final ModelSpec spec;
   final List<V3> trail;
+  final List<_EventMark> events;
+  final bool curtain;
   final AppPalette palette;
 
   /// Tinggi minimum model di layar, fraksi dari tinggi panel.
   final double modelFrac;
   final bool dark;
+}
+
+class _EventMark {
+  const _EventMark(this.label, this.kind, this.pos);
+  final String label;
+  final FlightEventKind kind;
+  final V3 pos;
 }
 
 class _TileRef {
@@ -995,8 +1140,10 @@ class _ScenePainter extends CustomPainter {
     _ground(canvas, size);
     final p = s.payload;
     if (p != null) _ring(canvas, p, kRangeRingM);
+    if (s.curtain) _curtainDraw(canvas);
     _trail(canvas);
     if (p != null) _model(canvas, p);
+    _eventLabels(canvas, size);
   }
 
   @override
@@ -1208,6 +1355,130 @@ class _ScenePainter extends CustomPainter {
     );
   }
 
+  // ---------------- Tirai lintasan ----------------
+  /// Bidang transparan dan garis tegak dari lintasan ke tanah, seperti
+  /// tampilan "extrude to ground" di Google Earth.
+  void _curtainDraw(Canvas canvas) {
+    final pts = s.trail;
+    if (pts.length < 2) return;
+    final accent = s.palette.accent;
+    final tops = [for (final p in pts) cam.camV(p)];
+    final gnds = [for (final p in pts) cam.cam(p.x, p.y, 0.05)];
+
+    final tri = <double>[];
+    void add(V3 v) {
+      final o = cam.proj(v);
+      tri
+        ..add(o.dx)
+        ..add(o.dy);
+    }
+
+    for (var i = 1; i < pts.length; i++) {
+      final a = tops[i - 1], b = tops[i];
+      final ga = gnds[i - 1], gb = gnds[i];
+      if (a.z < _near || b.z < _near || ga.z < _near || gb.z < _near) {
+        continue;
+      }
+      add(a);
+      add(b);
+      add(gb);
+      add(a);
+      add(gb);
+      add(ga);
+    }
+    if (tri.isNotEmpty) {
+      canvas.drawVertices(
+        ui.Vertices.raw(ui.VertexMode.triangles, Float32List.fromList(tri)),
+        BlendMode.srcOver,
+        Paint()..color = accent.withValues(alpha: 0.16),
+      );
+    }
+
+    final step = math.max(1, pts.length ~/ kCurtainMaxLines);
+    final path = Path();
+    for (var i = 0; i < pts.length; i += step) {
+      if (pts[i].z < 1) continue;
+      final a = tops[i], g = gnds[i];
+      if (a.z < _near || g.z < _near) continue;
+      final oa = cam.proj(a), og = cam.proj(g);
+      path
+        ..moveTo(oa.dx, oa.dy)
+        ..lineTo(og.dx, og.dy);
+    }
+    canvas.drawPath(
+      path,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1
+        ..color = accent.withValues(alpha: 0.55),
+    );
+  }
+
+  // ---------------- Label event ----------------
+  static Color _eventColor(FlightEventKind k) => switch (k) {
+        FlightEventKind.launch => Colors.white,
+        FlightEventKind.apogee => const Color(0xFFFF5252),
+        FlightEventKind.separation => const Color(0xFFFFB74D),
+        FlightEventKind.descent => const Color(0xFF69F0AE),
+        FlightEventKind.landed => const Color(0xFFE53935),
+      };
+
+  void _eventLabels(Canvas canvas, Size size) {
+    if (s.events.isEmpty) return;
+    final screen = (Offset.zero & size).inflate(60);
+    final placed = <Rect>[];
+    for (final e in s.events) {
+      final c = cam.camV(e.pos);
+      if (c.z < _near) continue;
+      final o = cam.proj(c);
+      if (!screen.contains(o)) continue;
+
+      final color = _eventColor(e.kind);
+      final filled = e.kind == FlightEventKind.landed;
+
+      final tp = TextPainter(
+        text: TextSpan(
+          text: e.label,
+          style: TextStyle(
+            color: filled ? Colors.white : color,
+            fontSize: 11,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+
+      var r = Rect.fromLTWH(
+          o.dx + 10, o.dy - tp.height / 2 - 3, tp.width + 12, tp.height + 6);
+      if (r.right > size.width - 4) {
+        r = r.shift(Offset(-(r.width + 20), 0));
+      }
+      // Geser ke bawah kalau menumpuk dengan label lain.
+      for (var k = 0; k < 6 && placed.any((q) => q.overlaps(r)); k++) {
+        r = r.shift(Offset(0, r.height + 3));
+      }
+      placed.add(r);
+
+      final anchor =
+          r.left > o.dx ? Offset(r.left, r.center.dy) : Offset(r.right, r.center.dy);
+      if ((r.center.dy - o.dy).abs() > 3) {
+        canvas.drawLine(
+            o,
+            anchor,
+            Paint()
+              ..strokeWidth = 1
+              ..color = color.withValues(alpha: 0.8));
+      }
+      canvas.drawCircle(o, 6, Paint()..color = Colors.white);
+      canvas.drawCircle(o, 4.2, Paint()..color = color);
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(r, const Radius.circular(5)),
+        Paint()..color = filled ? color : const Color(0xD90B1220),
+      );
+      tp.paint(canvas, Offset(r.left + 6, r.top + 3));
+    }
+  }
+
   // ---------------- Lintasan 3D ----------------
   void _trail(Canvas canvas) {
     final accent = s.palette.accent;
@@ -1391,7 +1662,7 @@ class _ScenePainter extends CustomPainter {
       final nz = e1x * e2y - e1y * e2x;
       final nl = math.sqrt(nx * nx + ny * ny + nz * nz);
       if (nl < 1e-12) continue;
-      // Pencahayaan dua sisi karena winding mesh CAD sering tidak konsisten.
+      
       final lit = 0.4 + 0.6 * ((nx * lx + ny * ly + nz * lz) / nl).abs();
       final col = mesh.colors[t] == 0 ? baseArgb : mesh.colors[t];
       final rr = (((col >> 16) & 0xFF) * lit).round();

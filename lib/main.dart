@@ -12,6 +12,7 @@ import 'package:window_manager/window_manager.dart';
 import 'models/telemetry.dart';
 import 'services/alert_service.dart';
 import 'services/command_service.dart';
+import 'services/flight_track.dart';
 import 'services/system_monitor.dart';
 import 'services/telemetry_logger.dart';
 import 'services/telemetry_service.dart';
@@ -42,6 +43,12 @@ const int kTelemetryPort = 9999;
 const int kCommandPort = 9998;
 
 const String kLaunchCmd = 'LAUNCH';
+
+/// Lebar panel Command di Dashboard: fraksi lebar baris, dengan batas
+/// bawah dan atas (piksel). Naikkan fraksi kalau peta terasa terlalu besar.
+const double kCommandPanelFrac = 0.32;
+const double kCommandPanelMin = 320;
+const double kCommandPanelMax = 560;
 const double kSimPacketLossRate = 0.0;
 const String kLogoAsset = 'assets/icons/eepisat.png';
 const String kSimTeamId = '1064';
@@ -481,15 +488,17 @@ class _GcsHomeState extends State<GcsHome> {
   int _lastTotal = -1;
   DateTime? _lastPacketAt;
 
-  // Jejak proses misi untuk bar progres di Dashboard.
-  final Map<String, String> _phaseTimes = {};
-  double? _maxAlt;
-  String? _lastState;
+  // Lintasan penuh satu penerbangan, waktu fase, dan apogee.
+  final FlightTrack track = FlightTrack();
 
   late final CommandService cmd = CommandService(
       host: service.host, port: kCommandPort, teamId: kSimTeamId);
 
   bool _isFullscreen = false;
+
+  /// true setelah command link dijalankan. Selama false, alert
+  /// COMMAND LINK DOWN tidak dimunculkan.
+  bool _cmdStarted = false;
   int _tab = 0;
   final List<String> _simLog = [];
 
@@ -532,6 +541,7 @@ class _GcsHomeState extends State<GcsHome> {
       await Future.delayed(const Duration(milliseconds: 500));
       service.connect();
       cmd.start();
+      _cmdStarted = true;
     } else {
       // ============= MODE LORA (hardware) =============
       debugPrint('[GCS] Mode LORA — receiver $kReceiverHost:$kTelemetryPort');
@@ -542,7 +552,9 @@ class _GcsHomeState extends State<GcsHome> {
 
       await Future.delayed(const Duration(milliseconds: 300));
       service.connect();
-      // cmd.start();   // ← uncomment kalau receiver sudah support command
+      // Uncomment dua baris ini kalau receiver sudah support command:
+      // cmd.start();
+      // _cmdStarted = true;
     }
   }
 
@@ -553,27 +565,10 @@ class _GcsHomeState extends State<GcsHome> {
       _lastTotal = service.totalReceived;
       _lastPacketAt = DateTime.now();
       final t = service.latest;
-      if (t != null) _trackPhase(t);
+      if (t != null) track.add(t);
     }
     _runAlerts();
     if (mounted) setState(() {});
-  }
-
-  /// Catat mission time saat tiap fase pertama kali muncul dan
-  /// ketinggian tertinggi. Direset saat kembali ke LAUNCH_PAD.
-  void _trackPhase(Telemetry t) {
-    final st = t.state.trim().toUpperCase();
-    if (st == 'LAUNCH_PAD' && _lastState != null && _lastState != 'LAUNCH_PAD') {
-      _phaseTimes.clear();
-      _maxAlt = null;
-    }
-    if (kFlightPhases.contains(st)) {
-      _phaseTimes.putIfAbsent(st, () => t.missionTime);
-    }
-    if (t.altitude.isFinite && (_maxAlt == null || t.altitude > _maxAlt!)) {
-      _maxAlt = t.altitude;
-    }
-    _lastState = st;
   }
 
   bool get _signalLost {
@@ -590,7 +585,7 @@ class _GcsHomeState extends State<GcsHome> {
       history: service.history,
       lastPacketAt: _lastPacketAt,
       telemetryLinkUp: service.status == ConnectionStatus.connected,
-      commandLinkUp: cmd.connected,
+      commandLinkUp: !_cmdStarted || cmd.connected,
       now: DateTime.now(),
     );
   }
@@ -667,6 +662,18 @@ class _GcsHomeState extends State<GcsHome> {
               children: [
                 _buildHeader(),
                 AlertBar(palette: palette, service: alerts),
+                // Flight state dibuat tetap (tidak ikut scroll) dan tampil
+                // di semua halaman.
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(14, 12, 14, 0),
+                  child: FlightProgressBar(
+                    palette: palette,
+                    data: service.latest,
+                    signalLost: _signalLost,
+                    phaseTimes: track.phaseTimes,
+                    maxAltitude: track.maxAlt,
+                  ),
+                ),
                 Expanded(child: _buildTabView()),
                 _buildStatusBar(),
               ],
@@ -739,6 +746,12 @@ class _GcsHomeState extends State<GcsHome> {
             const SizedBox(width: 20),
             _navTabs(iconOnly: tight),
             const Spacer(),
+            AlertStatusPill(
+              palette: palette,
+              service: alerts,
+              iconOnly: tight,
+            ),
+            const SizedBox(width: 12),
             ConnectionIndicator(palette: palette, status: service.status),
             const SizedBox(width: 14),
             if (!compact) ...[
@@ -1060,7 +1073,6 @@ class _GcsHomeState extends State<GcsHome> {
   // TAB 1: DASHBOARD
   // =========================================================
   Widget _buildDashboardTab() {
-    final t = service.latest;
     final history = service.history;
 
     return SingleChildScrollView(
@@ -1068,42 +1080,43 @@ class _GcsHomeState extends State<GcsHome> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          FlightProgressBar(
-            palette: palette,
-            data: t,
-            signalLost: _signalLost,
-            phaseTimes: _phaseTimes,
-            maxAltitude: _maxAlt,
-          ),
-          const SizedBox(height: 12),
+          // Peta di kiri, Command ringkas di kanan. Detail command
+          // (servo manual, preset, config, log) dibuka sebagai pop-up.
           SizedBox(
-            height: 380,
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Expanded(
-                  flex: 6,
-                  child: CommandPanel(
-                    palette: palette,
-                    service: cmd,
-                    compact: true,
+            height: 440,
+            child: LayoutBuilder(builder: (context, c) {
+              // Lebar panel Command mengikuti layar, dibatasi supaya
+              // tidak terlalu sempit di RPi dan tidak terlalu lebar di
+              // monitor besar.
+              final cmdW = (c.maxWidth * kCommandPanelFrac)
+                  .clamp(kCommandPanelMin, kCommandPanelMax)
+                  .toDouble();
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Expanded(
+                    child: Map3DView(
+                      key: const ValueKey('map3d-dash'),
+                      palette: palette,
+                      data: service.latest,
+                      track: track,
+                      compact: true,
+                      fallbackLat: kSimBaseLat,
+                      fallbackLon: kSimBaseLon,
+                    ),
                   ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  flex: 9,
-                  child: Map3DView(
-                    key: const ValueKey('map3d-dash'),
-                    palette: palette,
-                    data: service.latest,
-                    history: service.history,
-                    compact: true,
-                    fallbackLat: kSimBaseLat,
-                    fallbackLon: kSimBaseLon,
+                  const SizedBox(width: 12),
+                  SizedBox(
+                    width: cmdW,
+                    child: CommandPanel(
+                      palette: palette,
+                      service: cmd,
+                      compact: true,
+                    ),
                   ),
-                ),
-              ],
-            ),
+                ],
+              );
+            }),
           ),
           const SizedBox(height: 12),
           SizedBox(
@@ -1216,7 +1229,7 @@ class _GcsHomeState extends State<GcsHome> {
                     key: const ValueKey('map3d-tab'),
                     palette: palette,
                     data: service.latest,
-                    history: service.history,
+                    track: track,
                     fallbackLat: kSimBaseLat,
                     fallbackLon: kSimBaseLon,
                   ),

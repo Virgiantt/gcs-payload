@@ -1,16 +1,8 @@
 import 'package:flutter/material.dart';
 
 import '../models/telemetry.dart';
+import '../services/flight_track.dart';
 import '../theme/app_theme.dart';
-
-/// Urutan fase misi sesuai state di telemetri.
-const List<String> kFlightPhases = [
-  'LAUNCH_PAD',
-  'ASCENT',
-  'APOGEE',
-  'DESCENT',
-  'LANDED',
-];
 
 const List<String> _phaseNames = ['PAD', 'ASCENT', 'APOGEE', 'DESCENT', 'LANDED'];
 
@@ -70,7 +62,7 @@ class FlightProgressBar extends StatelessWidget {
     return LayoutBuilder(builder: (context, c) {
       final narrow = c.maxWidth < 1100;
       return Container(
-        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         decoration: BoxDecoration(
           gradient: LinearGradient(
             colors: [
@@ -81,12 +73,12 @@ class FlightProgressBar extends StatelessWidget {
             end: Alignment.centerRight,
           ),
           border: Border.all(color: color.withValues(alpha: 0.4), width: 1.5),
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(12),
         ),
         child: Row(
           children: [
             SizedBox(
-              width: narrow ? 170 : 210,
+              width: narrow ? 150 : 185,
               child: _stateBlock(st, cur, color),
             ),
             _vDivider(color),
@@ -106,8 +98,8 @@ class FlightProgressBar extends StatelessWidget {
 
   Widget _vDivider(Color color) => Container(
         width: 1,
-        height: 56,
-        margin: const EdgeInsets.symmetric(horizontal: 18),
+        height: 40,
+        margin: const EdgeInsets.symmetric(horizontal: 14),
         color: color.withValues(alpha: 0.25),
       );
 
@@ -120,8 +112,8 @@ class FlightProgressBar extends StatelessWidget {
     return Row(
       children: [
         Container(
-          width: 44,
-          height: 44,
+          width: 36,
+          height: 36,
           decoration: BoxDecoration(
             color: color.withValues(alpha: 0.2),
             shape: BoxShape.circle,
@@ -131,10 +123,10 @@ class FlightProgressBar extends StatelessWidget {
                 ? Icons.signal_wifi_off
                 : (cur >= 0 ? _phaseIcons[cur] : Icons.hourglass_empty),
             color: color,
-            size: 22,
+            size: 18,
           ),
         ),
-        const SizedBox(width: 12),
+        const SizedBox(width: 10),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -156,7 +148,7 @@ class FlightProgressBar extends StatelessWidget {
                   signalLost ? 'NA' : (st ?? 'WAITING'),
                   style: TextStyle(
                     color: color,
-                    fontSize: 22,
+                    fontSize: 18,
                     fontWeight: FontWeight.w800,
                     letterSpacing: 1.1,
                   ),
@@ -166,7 +158,7 @@ class FlightProgressBar extends StatelessWidget {
                 sub,
                 style: TextStyle(
                   color: signalLost ? p.bad : p.textDim,
-                  fontSize: 10,
+                  fontSize: 9.5,
                   fontWeight: FontWeight.w600,
                 ),
               ),
@@ -185,8 +177,8 @@ class FlightProgressBar extends StatelessWidget {
       if (i < kFlightPhases.length - 1) {
         children.add(Expanded(
           child: Padding(
-            // Sejajar dengan pusat lingkaran (diameter 32).
-            padding: const EdgeInsets.only(top: 14),
+            // Sejajar dengan pusat lingkaran (diameter 26).
+            padding: const EdgeInsets.only(top: 11),
             child: _connector(i, cur, color),
           ),
         ));
@@ -229,13 +221,13 @@ class FlightProgressBar extends StatelessWidget {
     final Color border = done ? p.ok : (active ? Colors.white : p.border);
 
     return SizedBox(
-      width: 74,
+      width: 70,
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           Container(
-            width: 32,
-            height: 32,
+            width: 26,
+            height: 26,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
               color: fill,
@@ -244,7 +236,7 @@ class FlightProgressBar extends StatelessWidget {
                   ? [
                       BoxShadow(
                         color: color.withValues(alpha: 0.55),
-                        blurRadius: 12,
+                        blurRadius: 10,
                         spreadRadius: 1,
                       ),
                     ]
@@ -252,28 +244,27 @@ class FlightProgressBar extends StatelessWidget {
             ),
             child: Icon(
               done ? Icons.check : _phaseIcons[i],
-              size: 16,
+              size: 14,
               color: done || active ? Colors.white : p.textDim,
             ),
           ),
-          const SizedBox(height: 6),
+          const SizedBox(height: 3),
           Text(
             _phaseNames[i],
             maxLines: 1,
             style: TextStyle(
               color: active ? color : (done ? p.text : p.textDim),
-              fontSize: 10,
+              fontSize: 9.5,
               fontWeight: active ? FontWeight.w800 : FontWeight.w700,
               letterSpacing: 0.8,
             ),
           ),
-          const SizedBox(height: 2),
           Text(
             time ?? '--:--:--',
             maxLines: 1,
             style: TextStyle(
               color: time == null ? p.textDim.withValues(alpha: 0.6) : p.textDim,
-              fontSize: 10,
+              fontSize: 9.5,
               fontWeight: FontWeight.w600,
               fontFamily: 'monospace',
             ),
@@ -311,7 +302,7 @@ class FlightProgressBar extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           for (var i = 0; i < items.length; i++) ...[
-            if (i > 0) const SizedBox(width: 22),
+            if (i > 0) const SizedBox(width: 20),
             items[i],
           ],
         ],
@@ -329,12 +320,12 @@ class FlightProgressBar extends StatelessWidget {
           label,
           style: TextStyle(
             color: p.textDim,
-            fontSize: 9,
+            fontSize: 8.5,
             fontWeight: FontWeight.w700,
             letterSpacing: 1.2,
           ),
         ),
-        const SizedBox(height: 4),
+        const SizedBox(height: 2),
         Row(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.baseline,
@@ -344,7 +335,7 @@ class FlightProgressBar extends StatelessWidget {
               value,
               style: TextStyle(
                 color: p.text,
-                fontSize: 20,
+                fontSize: 18,
                 fontWeight: FontWeight.w800,
               ),
             ),
