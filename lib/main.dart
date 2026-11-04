@@ -490,6 +490,7 @@ class _GcsHomeState extends State<GcsHome> {
       host: service.host, port: kCommandPort, teamId: kSimTeamId);
 
   bool _isFullscreen = false;
+  int _tab = 0;
   final List<String> _simLog = [];
 
   @override
@@ -680,100 +681,178 @@ class _GcsHomeState extends State<GcsHome> {
   // HEADER
   // =========================================================
   Widget _buildHeader() {
+    return LayoutBuilder(builder: (context, c) {
+      // Header menyesuaikan lebar layar supaya tidak meluber.
+      final compact = c.maxWidth < 1500; // tombol jadi ikon saja
+      final tight = c.maxWidth < 1180; // tab jadi ikon saja
+
+      return Container(
+        margin: const EdgeInsets.fromLTRB(14, 14, 14, 0),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          color: palette.panel,
+          border: Border.all(color: palette.border),
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 42,
+              height: 42,
+              decoration: BoxDecoration(
+                color: palette.panelAlt,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(6),
+                child: Image.asset(
+                  kLogoAsset,
+                  fit: BoxFit.contain,
+                  errorBuilder: (_, __, ___) => Icon(
+                    Icons.satellite_alt,
+                    color: palette.accent,
+                    size: 26,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(
+                  compact ? 'EEPISAT GCS' : 'EEPISAT Ground Control Station',
+                  style: TextStyle(
+                    color: palette.text,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'Team 1064  ·  Target ${service.host}:${service.port}',
+                  style: TextStyle(color: palette.textDim, fontSize: 11),
+                ),
+              ],
+            ),
+            const SizedBox(width: 20),
+            _navTabs(iconOnly: tight),
+            const Spacer(),
+            ConnectionIndicator(palette: palette, status: service.status),
+            const SizedBox(width: 14),
+            if (!compact) ...[
+              Container(width: 1, height: 30, color: palette.border),
+              const SizedBox(width: 14),
+              _brandLogo(
+                asset: 'assets/icons/indonesia.png',
+                tooltip: 'Indonesia',
+                height: 26,
+                circular: true,
+              ),
+              const SizedBox(width: 14),
+            ],
+            Container(width: 1, height: 30, color: palette.border),
+            const SizedBox(width: 14),
+            _headerButton(
+              icon: palette.name == 'dark' ? Icons.light_mode : Icons.dark_mode,
+              label: palette.name == 'dark' ? 'Light' : 'Dark',
+              onTap: _toggleTheme,
+              iconOnly: compact,
+            ),
+            const SizedBox(width: 8),
+            _headerButton(
+              icon: _isFullscreen ? Icons.fullscreen_exit : Icons.fullscreen,
+              label: _isFullscreen ? 'Exit' : 'Fullscreen',
+              onTap: _toggleFullscreen,
+              iconOnly: compact,
+            ),
+            const SizedBox(width: 8),
+            _headerButton(
+              icon: Icons.refresh,
+              label: 'Reconnect',
+              onTap: () => service.reconnect(),
+              iconOnly: compact,
+            ),
+            const SizedBox(width: 8),
+            _menuButton(),
+          ],
+        ),
+      );
+    });
+  }
+
+  // =========================================================
+  // NAVIGASI TAB (di dalam header)
+  // =========================================================
+  static const List<(IconData, String)> _tabItems = [
+    (Icons.dashboard_outlined, 'Dashboard'),
+    (Icons.public, 'Map 3D'),
+    (Icons.battery_charging_full, 'Battery'),
+  ];
+
+  Widget _navTabs({bool iconOnly = false}) {
     return Container(
-      margin: const EdgeInsets.fromLTRB(14, 14, 14, 0),
-      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+      padding: const EdgeInsets.all(4),
       decoration: BoxDecoration(
-        color: palette.panel,
+        color: palette.panelAlt,
         border: Border.all(color: palette.border),
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(10),
       ),
       child: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Container(
-            width: 46,
-            height: 46,
-            decoration: BoxDecoration(
-              color: palette.panelAlt,
-              borderRadius: BorderRadius.circular(10),
+          for (var i = 0; i < _tabItems.length; i++) ...[
+            if (i > 0) const SizedBox(width: 4),
+            _navTab(i, iconOnly),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _navTab(int i, bool iconOnly) {
+    final (icon, label) = _tabItems[i];
+    final active = _tab == i;
+    final color = active ? palette.accent : palette.textDim;
+    return Tooltip(
+      message: label,
+      child: InkWell(
+        onTap: () => setState(() => _tab = i),
+        borderRadius: BorderRadius.circular(7),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 150),
+          padding: EdgeInsets.symmetric(
+              horizontal: iconOnly ? 10 : 14, vertical: 8),
+          decoration: BoxDecoration(
+            color: active
+                ? palette.accent.withValues(alpha: 0.14)
+                : Colors.transparent,
+            border: Border.all(
+              color: active
+                  ? palette.accent.withValues(alpha: 0.6)
+                  : Colors.transparent,
             ),
-            child: Padding(
-              padding: const EdgeInsets.all(6),
-              child: Image.asset(
-                kLogoAsset,
-                fit: BoxFit.contain,
-                errorBuilder: (_, __, ___) => Icon(
-                  Icons.satellite_alt,
-                  color: palette.accent,
-                  size: 28,
-                ),
-              ),
-            ),
+            borderRadius: BorderRadius.circular(7),
           ),
-          const SizedBox(width: 14),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisAlignment: MainAxisAlignment.center,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              Text(
-                'EEPISAT Ground Control Station',
-                style: TextStyle(
-                  color: palette.text,
-                  fontSize: 17,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-              const SizedBox(height: 2),
-              Row(
-                children: [
-                  Text(
-                    'Team 1064  ·  Target ${service.host}:${service.port}',
-                    style: TextStyle(color: palette.textDim, fontSize: 11),
+              Icon(icon, size: 16, color: color),
+              if (!iconOnly) ...[
+                const SizedBox(width: 6),
+                Text(
+                  label,
+                  style: TextStyle(
+                    color: color,
+                    fontSize: 12.5,
+                    fontWeight: active ? FontWeight.w700 : FontWeight.w600,
                   ),
-                ],
-              ),
+                ),
+              ],
             ],
           ),
-          const Spacer(),
-          ConnectionIndicator(palette: palette, status: service.status),
-          const SizedBox(width: 16),
-          Container(width: 1, height: 32, color: palette.border),
-          const SizedBox(width: 16),
-          _brandLogo(
-            asset: 'assets/icons/eepisat.png',
-            tooltip: 'EEPISAT',
-            height: 32,
-          ),
-          const SizedBox(width: 12),
-          _brandLogo(
-            asset: 'assets/icons/indonesia.png',
-            tooltip: 'Indonesia',
-            height: 26,
-            circular: true,
-          ),
-          const SizedBox(width: 16),
-          Container(width: 1, height: 32, color: palette.border),
-          const SizedBox(width: 16),
-          _headerButton(
-            icon: palette.name == 'dark' ? Icons.light_mode : Icons.dark_mode,
-            label: palette.name == 'dark' ? 'Light' : 'Dark',
-            onTap: _toggleTheme,
-          ),
-          const SizedBox(width: 8),
-          _headerButton(
-            icon: _isFullscreen ? Icons.fullscreen_exit : Icons.fullscreen,
-            label: _isFullscreen ? 'Exit' : 'Fullscreen',
-            onTap: _toggleFullscreen,
-          ),
-          const SizedBox(width: 8),
-          _headerButton(
-            icon: Icons.refresh,
-            label: 'Reconnect',
-            onTap: () => service.reconnect(),
-          ),
-          const SizedBox(width: 8),
-          _menuButton(),
-        ],
+        ),
       ),
     );
   }
@@ -814,31 +893,38 @@ class _GcsHomeState extends State<GcsHome> {
     required IconData icon,
     required String label,
     required VoidCallback onTap,
+    bool iconOnly = false,
   }) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(8),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-        decoration: BoxDecoration(
-          color: palette.panelAlt,
-          border: Border.all(color: palette.border),
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, color: palette.text, size: 16),
-            const SizedBox(width: 6),
-            Text(
-              label,
-              style: TextStyle(
-                color: palette.text,
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ],
+    return Tooltip(
+      message: label,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8),
+        child: Container(
+          padding: EdgeInsets.symmetric(
+              horizontal: iconOnly ? 9 : 12, vertical: 9),
+          decoration: BoxDecoration(
+            color: palette.panelAlt,
+            border: Border.all(color: palette.border),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, color: palette.text, size: 16),
+              if (!iconOnly) ...[
+                const SizedBox(width: 6),
+                Text(
+                  label,
+                  style: TextStyle(
+                    color: palette.text,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ],
+          ),
         ),
       ),
     );
@@ -945,57 +1031,28 @@ class _GcsHomeState extends State<GcsHome> {
   // TABS
   // =========================================================
   Widget _buildTabView() {
-    return DefaultTabController(
-      length: 3,
-      child: Container(
-        margin: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: palette.panelAlt,
-          border: Border.all(color: palette.border),
-          borderRadius: BorderRadius.circular(12),
+    // Hanya halaman aktif yang dibangun, jadi tidak ada dua peta 3D
+    // yang menggambar bersamaan (penting untuk performa di RPi).
+    final Widget page = switch (_tab) {
+      1 => _buildMap3DTab(),
+      2 => BatteryPanel(
+          palette: palette,
+          latest: service.latest,
+          history: service.history,
+          signalLost: _signalLost,
         ),
-        child: Column(
-          children: [
-            TabBar(
-              isScrollable: true,
-              tabAlignment: TabAlignment.start,
-              indicatorSize: TabBarIndicatorSize.label,
-              tabs: const [
-                Tab(
-                  icon: Icon(Icons.dashboard_outlined, size: 16),
-                  text: 'Dashboard',
-                  iconMargin: EdgeInsets.only(bottom: 2),
-                ),
-                Tab(
-                  icon: Icon(Icons.public, size: 16),
-                  text: 'Map 3D',
-                  iconMargin: EdgeInsets.only(bottom: 2),
-                ),
-                Tab(
-                  icon: Icon(Icons.battery_charging_full, size: 16),
-                  text: 'Battery',
-                  iconMargin: EdgeInsets.only(bottom: 2),
-                ),
-              ],
-            ),
-            Expanded(
-              child: TabBarView(
-                physics: const NeverScrollableScrollPhysics(),
-                children: [
-                  _buildDashboardTab(),
-                  _buildMap3DTab(),
-                  BatteryPanel(
-                    palette: palette,
-                    latest: service.latest,
-                    history: service.history,
-                    signalLost: _signalLost,
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
+      _ => _buildDashboardTab(),
+    };
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+      decoration: BoxDecoration(
+        color: palette.panelAlt,
+        border: Border.all(color: palette.border),
+        borderRadius: BorderRadius.circular(12),
       ),
+      clipBehavior: Clip.hardEdge,
+      child: KeyedSubtree(key: ValueKey('page-$_tab'), child: page),
     );
   }
 
