@@ -1,28 +1,51 @@
 import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
-import 'package:flutter/foundation.dart';
-import '../models/telemetry.dart';
+import 'dart:typed_data';
 
+import 'package:dart_periphery/dart_periphery.dart';
+import 'package:flutter/foundation.dart';
+
+import '../models/telemetry.dart';
+import 'lora_protocol.dart';
+
+/// disconnected = merah  : serial/GPIO tidak ada atau modul tidak menjawab
+/// connecting   = kuning : modul sehat, menunggu transmitter (START)
+/// connected    = hijau  : handshake selesai dan ACK dikirim
 enum ConnectionStatus { disconnected, connecting, connected }
 
+/// Menerima frame biner dari transmitter ESP32 lewat modul E220 (UART),
+/// menjawab START_ACK dan GPS_ACK, lalu mengubah paket GPS menjadi [Telemetry].
+///
+/// Perilaku transmitter yang dipakai sebagai acuan:
+/// - START dikirim tiap 2 detik sampai ada START_ACK.
+/// - Paket GPS dikirim tiap 2 detik, wajib dijawab GPS_ACK dengan seq sama
+///   dalam 1,5 detik. Tiga ACK hilang berturut-turut membuat link putus.
+/// - Nomor seq dipakai bersama oleh START dan GPS, bertambah 1 tiap frame.
+/// - Tanpa fix, transmitter tetap mengirim paket dengan lat/lon 0 dan
+///   flag fix = 0.
 class TelemetryService extends ChangeNotifier {
-  final String host;
-  final int port;
-
-  /// Token handshake untuk receiver LoRa (ESP32). Dikirim sebagai
-  /// "AUTH `token`\n" tepat setelah TCP tersambung. null = tanpa AUTH
-  /// (mis. simulator embedded).
-  final String? authToken;
-
   TelemetryService({
-    this.host = '127.0.0.1',
-    this.port = 9999,
-    this.authToken,
+    this.portPath = '/dev/serial0',
+    this.baud = 9600,
+    this.m0Line = 22,
+    this.m1Line = 27,
+    this.auxLine = 17,
+    this.gpioChip = 0,
+    this.teamId = '1064',
   });
 
-  /// Dipanggil untuk setiap kejadian penting (koneksi, AUTH, paket masuk,
-  /// paket invalid). Dipakai main.dart untuk panel "LoRa LOG".
+  final String portPath;
+  final int baud;
+  final int m0Line;
+  final int m1Line;
+  final int auxLine;
+  final int gpioChip;
+  final String teamId;
+
+  /// Transmitter dianggap diam kalau tidak ada frame selama ini
+  /// (interval kirim transmitter 2 detik).
+  static const Duration linkTimeout = Duration(seconds: 10);
+  static const int maxHistory = 300;
+
   void Function(String msg)? onLog;
 
   void _log(String m) {
@@ -30,268 +53,347 @@ class TelemetryService extends ChangeNotifier {
     onLog?.call(m);
   }
 
-  Socket? _socket;
-  StreamSubscription? _sub;
-  Timer? _reconnectTimer;
-  bool _manuallyStopped = false;
+  Serial? _serial;
+  GPIO? _m0;
+  GPIO? _m1;
+  GPIO? _aux;
+  Timer? _pollTimer;
+  Timer? _watchdog;
+  Timer? _retryTimer;
+  bool _stopped = false;
+
+  final FrameParser _parser = FrameParser();
+  bool _linked = false;
+  DateTime? _lastFrameAt;
+  DateTime? _firstGpsAt;
+
+  // Nomor urut: seq transmitter hanya 8 bit, jadi di-unwrap menjadi
+  // hitungan yang terus naik. Frame START ikut memakai seq, tetapi tidak
+  // dihitung sebagai paket data.
+  bool _haveSeq = false;
+  int _lastSeq = 0;
+  int _unwrapped = 0;
+  int _rxCount = 0;
 
   ConnectionStatus _status = ConnectionStatus.disconnected;
   ConnectionStatus get status => _status;
+
+  String _statusMessage = 'Menunggu modul LoRa...';
+  String get statusMessage => _statusMessage;
 
   Telemetry? _latest;
   Telemetry? get latest => _latest;
 
   final List<Telemetry> _history = [];
   List<Telemetry> get history => List.unmodifiable(_history);
-  static const int maxHistory = 300;
 
-  // ---- field yang tidak ada di model Telemetry (format paket baru) ----
-  /// Arus (A) dari paket terakhir. NaN kalau tidak ada / sensor error.
-  double _latestCurrent = double.nan;
-  double get latestCurrent => _latestCurrent;
-
-  /// Riwayat arus, sejajar 1:1 dengan [history].
-  final List<double> _currentHistory = [];
-  List<double> get currentHistory => List.unmodifiable(_currentHistory);
-
-  /// Nama field yang NaN (sensor error) pada paket terakhir.
-  List<String> _invalidFields = const [];
-  List<String> get invalidFields => _invalidFields;
-
-  /// Jumlah paket ditolak karena checksum salah.
-  int checksumErrors = 0;
-
-  /// Total paket yang pernah diterima sejak aplikasi jalan (terus naik,
-  /// tidak dibatasi maxHistory). Dipakai sebagai nomor sampel di sumbu X chart.
   int _totalReceived = 0;
   int get totalReceived => _totalReceived;
 
-  String _statusMessage = 'Waiting for receiver...';
-  String get statusMessage => _statusMessage;
+  // Transmitter GPS-only tidak mengirim arus.
+  double _latestCurrent = double.nan;
+  double get latestCurrent => _latestCurrent;
+  final List<double> _currentHistory = [];
+  List<double> get currentHistory => List.unmodifiable(_currentHistory);
+  List<String> get invalidFields => const [];
 
+  double latestSpeedKmh = double.nan;
+  int latestSats = 0;
+
+  int get checksumErrors => _parser.crcErrors;
+
+  // =========================================================
+  // KONEKSI
+  // =========================================================
   Future<void> connect() async {
-    _manuallyStopped = false;
-    await _disconnectSocket();
-    _setStatus(ConnectionStatus.connecting, 'Menghubungkan ke $host:$port ...');
-    _log('Connecting to $host:$port');
+    _stopped = false;
+    _retryTimer?.cancel();
+    _closeHardware();
+    _setStatus(ConnectionStatus.connecting, 'Membuka $portPath ...');
 
     try {
-      final socket = await Socket.connect(
-        host,
-        port,
-        timeout: const Duration(seconds: 5),
-      );
-      _socket = socket;
-      socket.setOption(SocketOption.tcpNoDelay, true);
-      _log(
-          'TCP connected: ${socket.remoteAddress.address}:${socket.remotePort}');
-
-      // allowMalformed: byte rusak dari LoRa tidak boleh memutus koneksi
-      _sub = socket
-          .cast<List<int>>()
-          .transform(const Utf8Decoder(allowMalformed: true))
-          .transform(const LineSplitter())
-          .listen(
-            _handleLine,
-            onDone: () => _handleDisconnect(),
-            onError: (e) => _handleDisconnect(e.toString()),
-            cancelOnError: true,
-          );
-
-      // Handshake (listen dulu, baru AUTH, supaya balasan tidak terlewat)
-      final token = authToken;
-      if (token != null && token.isNotEmpty) {
-        socket.write('AUTH $token\n');
-        await socket.flush();
-        _log('AUTH sent');
-      }
-
-      _setStatus(ConnectionStatus.connected, 'Connected to $host:$port');
+      _m0 = GPIO(m0Line, GPIOdirection.gpioDirOut, gpioChip);
+      _m1 = GPIO(m1Line, GPIOdirection.gpioDirOut, gpioChip);
+      _aux = GPIO(auxLine, GPIOdirection.gpioDirIn, gpioChip);
+      _serial = Serial(portPath, Baudrate.b9600);
     } catch (e) {
-      _log('Connection failed: $e');
-      _setStatus(ConnectionStatus.disconnected, 'Koneksi gagal: $e');
-      _scheduleReconnect();
-    }
-  }
-
-  /// Masukkan satu baris CSV dari sumber lain.
-  void ingestLine(String line) => _handleLine(line);
-
-  /// Set status koneksi dari sumber eksternal.
-  void markExternal(ConnectionStatus s, String msg) => _setStatus(s, msg);
-
-  // =========================================================
-  // FORMAT PAKET
-  // =========================================================
-  // BARU (tx.py / rx.py), 14 field:
-  //  0 MISSION_TIME  1 PACKET_ID  2 TEAM_ID  3 PRESSURE  4 ALTITUDE
-  //  5 VOLTAGE  6 CURRENT  7 STATE(0-4)  8 LAT  9 LON
-  //  10 ROLL  11 PITCH  12 YAW  13 CHECKSUM (XOR hex)
-  //
-  // LAMA (simulator embedded / model Telemetry), 14 field:
-  //  TEAM_ID,MISSION_TIME,PACKET_COUNT,ALTITUDE,PRESSURE,TEMPERATURE,
-  //  VOLTAGE,ROLL,PITCH,YAW,GPS_LAT,GPS_LON,GPS_ALT,STATE
-  //
-  // Paket baru diubah ke bentuk LAMA supaya Telemetry.fromCsv tidak perlu
-  // diubah. TEMPERATURE & GPS_ALT tidak ada di paket baru -> NaN.
-  static final RegExp _timeRe = RegExp(r'^\d{1,3}:\d{2}:\d{2}$');
-  static const List<String> _stateNames = [
-    'LAUNCH_PAD',
-    'ASCENT',
-    'APOGEE',
-    'DESCENT',
-    'LANDED',
-  ];
-
-  static bool _isNewFormat(List<String> p) =>
-      p.length == 14 && _timeRe.hasMatch(p[0].trim());
-
-  static String _checksum(String s) {
-    var c = 0;
-    for (final b in utf8.encode(s)) {
-      c ^= b;
-    }
-    return c.toRadixString(16).toUpperCase().padLeft(2, '0');
-  }
-
-  static bool _checksumOk(String line) {
-    final i = line.lastIndexOf(',');
-    if (i < 0) return false;
-    final body = line.substring(0, i);
-    final sent = line.substring(i + 1).trim().toUpperCase();
-    return _checksum(body) == sent;
-  }
-
-  /// "nan" / kosong / tidak terbaca -> "NaN" (bisa di-parse Dart).
-  static String _num(String s) {
-    final v = double.tryParse(s.trim());
-    return (v == null || !v.isFinite) ? 'NaN' : s.trim();
-  }
-
-  static bool _isNan(String s) {
-    final v = double.tryParse(s.trim());
-    return v == null || !v.isFinite;
-  }
-
-  void _handleLine(String line) {
-    final text = line.trim();
-    if (text.isEmpty) return;
-    debugPrint('[TCP LINE] $text');
-
-    // Header CSV (format lama diawali TEAM_ID, format baru MISSION_TIME)
-    final up = text.toUpperCase();
-    if (up.startsWith('TEAM_ID') || up.startsWith('MISSION_TIME')) {
-      _log('CSV header received');
+      _fail('Serial/GPIO tidak tersedia: $e');
       return;
     }
 
-    // Pesan kontrol dari receiver (mis. "AUTH OK") — bukan paket telemetri
-    if (!text.contains(',')) {
-      _log('Receiver: $text');
+    try {
+      if (!await _readConfig()) return;
+      await _setMode(0);
+    } catch (e) {
+      _fail('Gagal menyiapkan modul: $e');
       return;
     }
 
-    var csv = text;
-    var current = double.nan;
-    var invalid = <String>[];
+    _parser.reset();
+    _linked = false;
+    _lastFrameAt = null;
+    _pollTimer =
+        Timer.periodic(const Duration(milliseconds: 20), (_) => _poll());
+    _watchdog = Timer.periodic(const Duration(seconds: 1), (_) => _checkLink());
+    _setStatus(ConnectionStatus.connecting,
+        'Modul siap. Menunggu START dari transmitter ...');
+    _log('Modul siap, mode normal. Menunggu START.');
+  }
 
-    final p = text.split(',').map((e) => e.trim()).toList();
-    if (_isNewFormat(p)) {
-      if (!_checksumOk(text)) {
-        checksumErrors++;
-        _log('Checksum salah (#$checksumErrors): '
-            '${text.length > 70 ? '${text.substring(0, 70)}...' : text}');
-        return;
+  Future<void> reconnect() async {
+    _retryTimer?.cancel();
+    await connect();
+  }
+
+  void _fail(String msg) {
+    _log(msg);
+    _closeHardware();
+    _setStatus(ConnectionStatus.disconnected, msg);
+    if (_stopped) return;
+    _retryTimer?.cancel();
+    _retryTimer = Timer(const Duration(seconds: 3), () {
+      if (!_stopped) connect();
+    });
+  }
+
+  void _closeHardware() {
+    _pollTimer?.cancel();
+    _watchdog?.cancel();
+    _pollTimer = null;
+    _watchdog = null;
+    _linked = false;
+    try {
+      _m0?.write(false);
+      _m1?.write(false);
+    } catch (_) {}
+    for (final d in [_serial, _m0, _m1, _aux]) {
+      try {
+        (d as dynamic)?.dispose();
+      } catch (_) {}
+    }
+    _serial = null;
+    _m0 = null;
+    _m1 = null;
+    _aux = null;
+  }
+
+  // =========================================================
+  // MODUL E220
+  // =========================================================
+  Future<bool> _waitAuxHigh(Duration timeout) async {
+    final end = DateTime.now().add(timeout);
+    while (DateTime.now().isBefore(end)) {
+      if (_aux?.read() ?? true) return true;
+      await Future.delayed(const Duration(milliseconds: 5));
+    }
+    return _aux?.read() ?? true;
+  }
+
+  Future<void> _setMode(int mode) async {
+    _m0?.write((mode & 1) != 0);
+    _m1?.write((mode & 2) != 0);
+    await Future.delayed(const Duration(milliseconds: 20));
+    await _waitAuxHigh(const Duration(seconds: 2));
+    await Future.delayed(const Duration(milliseconds: 50));
+  }
+
+  List<int> _readBytes() {
+    final ev = _serial!.read(256, 0); // timeout 0 = tidak memblokir
+    return ev.data;
+  }
+
+  Future<bool> _readConfig() async {
+    final s = _serial!;
+    await _setMode(3);
+    _readBytes();
+    s.write(Uint8List.fromList([0xC1, 0x00, 0x08]));
+
+    final buf = <int>[];
+    final end = DateTime.now().add(const Duration(milliseconds: 600));
+    while (DateTime.now().isBefore(end) && buf.length < 11) {
+      await Future.delayed(const Duration(milliseconds: 20));
+      buf.addAll(_readBytes());
+    }
+
+    if (buf.isEmpty) {
+      _fail('Modul E220 tidak menjawab. Cek kabel TX/RX, M0/M1, dan daya.');
+      return false;
+    }
+    if (buf.length >= 11 &&
+        buf[0] == 0xC1 &&
+        buf[1] == 0x00 &&
+        buf[2] == 0x08) {
+      _logConfig(buf.sublist(3, 11));
+      return true;
+    }
+    final hex = buf.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
+    _fail('Jawaban config tidak dikenal: $hex');
+    return false;
+  }
+
+  void _logConfig(List<int> p) {
+    const bauds = [1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200];
+    const air = [
+      '2.4k', '2.4k', '2.4k', '4.8k', '9.6k', '19.2k', '38.4k', '62.5k'
+    ];
+    final addr = '${p[0].toRadixString(16).padLeft(2, '0')}'
+            '${p[1].toRadixString(16).padLeft(2, '0')}'
+        .toUpperCase();
+    final b = bauds[(p[2] >> 5) & 7];
+    final fixed = (p[5] & 0x40) != 0;
+    _log('Config: alamat $addr, channel ${p[4]}, UART $b, '
+        'air ${air[p[2] & 7]} bps, ${fixed ? 'FIXED' : 'transparent'}');
+    if (b != 9600) _log('PERINGATAN: baud modul $b, aplikasi memakai 9600.');
+    if (fixed) {
+      _log('PERINGATAN: mode FIXED. Transmitter mengirim transparent, '
+          'ubah modul ke transparent.');
+    }
+    if ((p[5] & 0x80) != 0) {
+      _log('PERINGATAN: byte RSSI aktif. Matikan di modul Pi supaya tidak '
+          'ada byte tambahan di tiap paket.');
+    }
+  }
+
+  // =========================================================
+  // PENERIMAAN
+  // =========================================================
+  void _poll() {
+    if (_serial == null) return;
+    try {
+      for (final b in _readBytes()) {
+        if (_parser.feed(b)) _onFrame();
       }
-
-      final si = int.tryParse(p[7]);
-      final state = (si != null && si >= 0 && si < _stateNames.length)
-          ? _stateNames[si]
-          : 'UNKNOWN';
-
-      csv = [
-        p[2], // TEAM_ID
-        p[0], // MISSION_TIME
-        int.tryParse(p[1])?.toString() ?? '0', // PACKET_COUNT ("0801" -> 801)
-        _num(p[4]), // ALTITUDE
-        _num(p[3]), // PRESSURE
-        'NaN', // TEMPERATURE (tidak dikirim)
-        _num(p[5]), // VOLTAGE
-        _num(p[10]), // ROLL
-        _num(p[11]), // PITCH
-        _num(p[12]), // YAW
-        _num(p[8]), // GPS_LAT
-        _num(p[9]), // GPS_LON
-        'NaN', // GPS_ALT (tidak dikirim)
-        state,
-      ].join(',');
-
-      final cv = double.tryParse(p[6]);
-      current = (cv != null && cv.isFinite) ? cv : double.nan;
-
-      // Field yang seharusnya ada tapi NaN = sensor error
-      // (lat/lon ditangani alert GPS NO FIX, jadi tidak dihitung di sini)
-      if (_isNan(p[3])) invalid.add('Pressure');
-      if (_isNan(p[4])) invalid.add('Altitude');
-      if (_isNan(p[5])) invalid.add('Voltage');
-      if (_isNan(p[6])) invalid.add('Current');
-      if (_isNan(p[10])) invalid.add('Roll');
-      if (_isNan(p[11])) invalid.add('Pitch');
-      if (_isNan(p[12])) invalid.add('Yaw');
-      if (state == 'UNKNOWN') invalid.add('State');
+    } catch (e) {
+      _fail('Serial error: $e');
     }
+  }
+
+  void _checkLink() {
+    final at = _lastFrameAt;
+    if (_linked && at != null && DateTime.now().difference(at) > linkTimeout) {
+      _linked = false;
+      _setStatus(ConnectionStatus.connecting,
+          'Transmitter diam lebih dari ${linkTimeout.inSeconds} detik. '
+          'Menunggu START ...');
+      _log('Link putus: tidak ada frame ${linkTimeout.inSeconds} detik');
+    }
+  }
+
+  Future<void> _send(Uint8List frame) async {
+    await _waitAuxHigh(const Duration(milliseconds: 300));
+    try {
+      _serial?.write(frame);
+    } catch (e) {
+      _log('Gagal kirim ACK: $e');
+    }
+  }
+
+  void _markLinked() {
+    _lastFrameAt = DateTime.now();
+    if (!_linked) {
+      _linked = true;
+      _setStatus(
+          ConnectionStatus.connected, 'Link aktif, ACK dikirim ke transmitter');
+    }
+  }
+
+  void _onFrame() {
+    final seq = _parser.seq;
+    final payload = Uint8List.fromList(_parser.payload.sublist(0, _parser.len));
+
+    switch (_parser.type) {
+      case LoraProtocol.pktStart:
+        if (!listEquals(payload, LoraProtocol.startWord)) {
+          _log('START dengan isi tidak cocok, diabaikan');
+          return;
+        }
+        // START memakai nomor seq yang sama dengan paket data. Jadikan
+        // baseline tanpa menambah hitungan paket, supaya handshake ulang
+        // (atau transmitter yang reboot) tidak terbaca sebagai packet loss.
+        _lastSeq = seq;
+        _haveSeq = true;
+        unawaited(_send(LoraProtocol.startAck(seq)));
+        _log('START diterima (seq $seq), START_ACK dikirim');
+        _markLinked();
+        break;
+
+      case LoraProtocol.pktGps:
+        final g = GpsPayload.parse(payload);
+        if (g == null) {
+          _log('GPS payload ${payload.length} byte, harusnya 16');
+          return;
+        }
+        final duplicate = _haveSeq && seq == _lastSeq;
+        if (!duplicate) {
+          if (!_haveSeq) {
+            _unwrapped = seq;
+            _haveSeq = true;
+          } else {
+            _unwrapped += (seq - _lastSeq) & 0xFF;
+          }
+          _lastSeq = seq;
+          _rxCount = (_rxCount + 1) & 0xFFFF;
+        }
+        unawaited(_send(LoraProtocol.gpsAck(seq, _rxCount)));
+        _markLinked();
+        if (!duplicate) _ingestGps(g);
+        break;
+
+      default:
+        _log('Tipe frame tidak dikenal: 0x${_parser.type.toRadixString(16)}');
+    }
+  }
+
+  void _ingestGps(GpsPayload g) {
+    final now = DateTime.now();
+    _firstGpsAt ??= now;
+    final el = now.difference(_firstGpsAt!);
+    String two(int n) => n.toString().padLeft(2, '0');
+    final mission =
+        '${two(el.inHours)}:${two(el.inMinutes % 60)}:${two(el.inSeconds % 60)}';
+
+    final fix = g.fixValid;
+    final alt = fix ? g.altM.toStringAsFixed(1) : 'NaN';
+    final csv = [
+      teamId,
+      mission,
+      _unwrapped,
+      alt, // ALTITUDE (altitude GPS, belum ada barometer)
+      'NaN', // PRESSURE
+      'NaN', // TEMPERATURE
+      'NaN', // VOLTAGE
+      'NaN', // ROLL
+      'NaN', // PITCH
+      'NaN', // YAW
+      fix ? g.lat.toStringAsFixed(6) : 'NaN',
+      fix ? g.lon.toStringAsFixed(6) : 'NaN',
+      alt, // GPS_ALT
+      'UNKNOWN',
+    ].join(',');
 
     final t = Telemetry.fromCsv(csv);
     if (t == null) {
-      final short = text.length > 90 ? '${text.substring(0, 90)}...' : text;
-      _log('Invalid packet: $short');
+      _log('Paket GPS gagal diubah ke Telemetry');
       return;
     }
 
     _latest = t;
-    _latestCurrent = current;
-    _invalidFields = invalid;
+    _latestCurrent = double.nan;
+    latestSpeedKmh = g.speedKmh;
+    latestSats = g.sats;
     _history.add(t);
-    _currentHistory.add(current);
+    _currentHistory.add(double.nan);
     _totalReceived++;
     if (_history.length > maxHistory) {
       _history.removeAt(0);
       _currentHistory.removeAt(0);
     }
 
-    final nanNote = invalid.isEmpty ? '' : ' | NaN: ${invalid.join(',')}';
-    _log('RX #${t.packetCount} | ${t.state} | '
-        'ALT ${t.altitude.isFinite ? t.altitude.toStringAsFixed(1) : 'NaN'} m'
-        '$nanNote');
+    _log('RX #$_unwrapped | ${fix ? 'FIX' : 'NO FIX'} | '
+        '${g.lat.toStringAsFixed(5)}, ${g.lon.toStringAsFixed(5)} | '
+        'ALT ${g.altM.toStringAsFixed(1)} m | '
+        '${g.speedKmh.toStringAsFixed(1)} km/h | ${g.sats} sat');
     notifyListeners();
-  }
-
-  void _handleDisconnect([String? reason]) {
-    _log(reason != null
-        ? 'Socket error: $reason'
-        : 'Connection closed by receiver');
-    _setStatus(
-      ConnectionStatus.disconnected,
-      reason != null ? 'Terputus: $reason' : 'Terputus dari receiver',
-    );
-    _scheduleReconnect();
-  }
-
-  void _scheduleReconnect() {
-    if (_manuallyStopped) return;
-    _reconnectTimer?.cancel();
-    _reconnectTimer = Timer(const Duration(seconds: 3), () {
-      if (!_manuallyStopped) connect();
-    });
-  }
-
-  Future<void> _disconnectSocket() async {
-    await _sub?.cancel();
-    _sub = null;
-    try {
-      await _socket?.close();
-    } catch (_) {}
-    _socket = null;
   }
 
   void _setStatus(ConnectionStatus s, String msg) {
@@ -300,16 +402,11 @@ class TelemetryService extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> reconnect() async {
-    _reconnectTimer?.cancel();
-    await connect();
-  }
-
   @override
   void dispose() {
-    _manuallyStopped = true;
-    _reconnectTimer?.cancel();
-    _disconnectSocket();
+    _stopped = true;
+    _retryTimer?.cancel();
+    _closeHardware();
     super.dispose();
   }
 }

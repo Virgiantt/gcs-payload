@@ -152,28 +152,42 @@ class AlertService {
     required bool telemetryLinkUp,
     required bool commandLinkUp,
     required DateTime now,
-    String? telemetryTarget, // mis. "192.168.43.201:9999"
+    String? telemetryTarget, // mis. "/dev/serial0"
     String? telemetryStatus, // mis. service.statusMessage
     List<String> invalidFields = const [], // field NaN (sensor error)
+    bool moduleUp = true, // modul LoRa terbaca (serial + config)
   }) {
     final out = <Alert>[];
     final inGrace = now.difference(_started) < AlertThresholds.startupGrace;
 
     // ---- koneksi ----
-    if (!inGrace && !telemetryLinkUp) {
-      final target = telemetryTarget ?? 'sumber telemetri';
+    // Merah: modul LoRa tidak terbaca. Kuning: modul sehat, transmitter
+    // belum menyelesaikan handshake. Keduanya memakai id 'link'.
+    if (!inGrace && !moduleUp) {
+      final target = telemetryTarget ?? 'modul LoRa';
       final why = (telemetryStatus != null && telemetryStatus.isNotEmpty)
           ? ' Status: $telemetryStatus'
           : '';
       out.add(Alert(
         'link',
         AlertLevel.critical,
-        'TELEMETRY LINK DOWN',
-        'Tidak tersambung ke $target.$why',
+        'LORA MODULE DOWN',
+        'Modul LoRa di $target tidak merespons.$why',
         source: AlertSource.telemetry,
-        value: 'OFFLINE',
-        hint: 'Pastikan laptop satu WiFi dengan receiver, IP/port benar, '
-            'dan token AUTH cocok. Lihat panel LoRa LOG di tab Map 3D.',
+        value: 'NO MODULE',
+        hint: 'Cek kabel TX/RX, M0/M1, AUX, daya modul, dan UART Pi aktif. '
+            'Lihat panel LoRa LOG di tab Map 3D.',
+      ));
+    } else if (!inGrace && !telemetryLinkUp) {
+      out.add(const Alert(
+        'link',
+        AlertLevel.warning,
+        'WAITING FOR TRANSMITTER',
+        'Modul LoRa sehat, tetapi transmitter belum menyelesaikan handshake.',
+        source: AlertSource.telemetry,
+        value: 'NO LINK',
+        hint: 'Cek transmitter menyala, antena terpasang, serta channel, '
+            'alamat, dan air data rate sama di kedua modul.',
       ));
     }
     if (!inGrace && !commandLinkUp) {
@@ -194,10 +208,9 @@ class AlertService {
         'no_data',
         AlertLevel.warning,
         'NO TELEMETRY DATA',
-        'Terhubung ke receiver, tetapi belum ada paket yang diterima.',
+        'Terhubung ke transmitter, tetapi belum ada paket data yang diterima.',
         source: AlertSource.telemetry,
-        hint: 'Cek transmitter menyala, antena terpasang, serta frekuensi '
-            'dan sync word LoRa sama di kedua sisi.',
+        hint: 'Cek transmitter sudah mengirim paket GPS dan antena terpasang.',
       ));
     }
 

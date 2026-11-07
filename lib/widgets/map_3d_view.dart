@@ -140,12 +140,8 @@ class Map3DView extends StatefulWidget {
   /// true untuk panel kecil di Dashboard.
   final bool compact;
 
-  /// Titik awal kamera sebelum ada GPS fix.
-  final double fallbackLat;
-  final double fallbackLon;
-
-  /// Teks di pita bawah gambar capture.
-  final String captureLabel;
+  /// Teks opsional di pita bawah gambar capture. Kosong = tidak ditampilkan.
+  final String? captureLabel;
 
   const Map3DView({
     super.key,
@@ -155,9 +151,7 @@ class Map3DView extends StatefulWidget {
     this.rocketModel = kRocketModel,
     this.payloadModel = kPayloadModel,
     this.compact = false,
-    this.fallbackLat = -7.275764,
-    this.fallbackLon = 112.794317,
-    this.captureLabel = 'EEPISAT Team 1064',
+    this.captureLabel,
   });
 
   @override
@@ -178,6 +172,7 @@ class _Map3DViewState extends State<Map3DView>
   late final Ticker _ticker;
   Duration _lastTick = Duration.zero;
 
+  /// null sampai ada lintasan atau GPS valid. Tidak ada lokasi bawaan.
   _Geo? _geo;
   List<V3> _trail = const [];
   int _trailSig = 0;
@@ -277,6 +272,7 @@ class _Map3DViewState extends State<Map3DView>
     final t = widget.data;
 
     // Titik asal ENU = titik pertama lintasan (biasanya launch pad).
+    // Kalau belum ada lintasan maupun GPS valid, _geo tetap null.
     var geoChanged = false;
     if (_geo == null) {
       if (pts.isNotEmpty) {
@@ -293,7 +289,7 @@ class _Map3DViewState extends State<Map3DView>
         geoChanged = true;
       }
     }
-    final geo = _geo ?? _Geo(widget.fallbackLat, widget.fallbackLon);
+    final geo = _geo;
     if (geoChanged) {
       _posC = null;
       _posT = null;
@@ -301,22 +297,24 @@ class _Map3DViewState extends State<Map3DView>
     }
 
     // Lintasan dan event dihitung ulang hanya saat track berubah.
-    final sig = Object.hash(track.version, geo.lat0, geo.lon0);
-    if (sig != _trailSig) {
-      _trailSig = sig;
-      final step = math.max(1, pts.length ~/ 1500);
-      final out = <V3>[];
-      for (var i = 0; i < pts.length; i += step) {
-        out.add(_enuP(geo, pts[i]));
+    if (geo != null) {
+      final sig = Object.hash(track.version, geo.lat0, geo.lon0);
+      if (sig != _trailSig) {
+        _trailSig = sig;
+        final step = math.max(1, pts.length ~/ 1500);
+        final out = <V3>[];
+        for (var i = 0; i < pts.length; i += step) {
+          out.add(_enuP(geo, pts[i]));
+        }
+        if (pts.isNotEmpty && (pts.length - 1) % step != 0) {
+          out.add(_enuP(geo, pts.last));
+        }
+        _trail = out;
+        _events = [
+          for (final e in track.events)
+            _EventMark(e.label, e.kind, _enuP(geo, pts[e.index])),
+        ];
       }
-      if (pts.isNotEmpty && (pts.length - 1) % step != 0) {
-        out.add(_enuP(geo, pts.last));
-      }
-      _trail = out;
-      _events = [
-        for (final e in track.events)
-          _EventMark(e.label, e.kind, _enuP(geo, pts[e.index])),
-      ];
     }
 
     if (t == null) return;
@@ -331,7 +329,7 @@ class _Map3DViewState extends State<Map3DView>
     }
 
     _gpsFix = _validGps(t);
-    if (_gpsFix) {
+    if (_gpsFix && geo != null) {
       final np = _enu(geo, t);
       if (_posC == null || (np - _posC!).length > 3000) _posC = np;
       _posT = np;
@@ -605,7 +603,8 @@ class _Map3DViewState extends State<Map3DView>
     String f(double v) => '${v >= 0 ? '+' : ''}${v.toStringAsFixed(1)}';
 
     final apo = widget.track.maxAlt;
-    final line1 = '${widget.captureLabel}   $ts'
+    final label = widget.captureLabel;
+    final line1 = '${label == null || label.isEmpty ? '' : '$label   '}$ts'
         '${apo == null ? '' : '   Apogee ${apo.toStringAsFixed(1)} m'}';
     final line2 = t == null
         ? 'Belum ada data telemetri'
@@ -694,28 +693,32 @@ class _Map3DViewState extends State<Map3DView>
     final spec = _separated ? widget.payloadModel : widget.rocketModel;
     final mesh = _separated ? _payloadMesh : _rocketMesh;
 
-    final scene = _Scene(
-      geo: _geo ?? _Geo(widget.fallbackLat, widget.fallbackLon),
-      tiles: _tiles,
-      target: _target,
-      heading: _heading,
-      tilt: _tilt,
-      dist: _dist,
-      payload: pay,
-      roll: _rollC,
-      pitch: _pitchC,
-      yaw: _yawC,
-      mesh: mesh,
-      spec: spec,
-      trail: pay == null ? _trail : [..._trail, pay],
-      palette: p,
-      events: _events,
-      curtain: _curtain,
-      modelFrac: _modelFracForDistance() *
-          kModelScales[_scaleIdx] *
-          spec.screenScale,
-      dark: p.name == 'dark',
-    );
+    // Scene hanya dibuat kalau lokasi sudah diketahui (lintasan atau GPS).
+    final geo = _geo;
+    final scene = geo == null
+        ? null
+        : _Scene(
+            geo: geo,
+            tiles: _tiles,
+            target: _target,
+            heading: _heading,
+            tilt: _tilt,
+            dist: _dist,
+            payload: pay,
+            roll: _rollC,
+            pitch: _pitchC,
+            yaw: _yawC,
+            mesh: mesh,
+            spec: spec,
+            trail: pay == null ? _trail : [..._trail, pay],
+            palette: p,
+            events: _events,
+            curtain: _curtain,
+            modelFrac: _modelFracForDistance() *
+                kModelScales[_scaleIdx] *
+                spec.screenScale,
+            dark: p.name == 'dark',
+          );
 
     return Container(
       decoration: BoxDecoration(
@@ -740,12 +743,19 @@ class _Map3DViewState extends State<Map3DView>
                         onScaleStart: (_) => _distAtStart = _dist,
                         onScaleUpdate: _onScaleUpdate,
                         onDoubleTap: _resetView,
-                        child: RepaintBoundary(
-                          child: CustomPaint(
-                            painter: _ScenePainter(scene),
-                            size: Size.infinite,
-                          ),
-                        ),
+                        child: scene == null
+                            ? Center(
+                                child: Text(
+                                  'Menunggu GPS fix...',
+                                  style: _mono(12, color: p.textDim),
+                                ),
+                              )
+                            : RepaintBoundary(
+                                child: CustomPaint(
+                                  painter: _ScenePainter(scene),
+                                  size: Size.infinite,
+                                ),
+                              ),
                       ),
                     ),
                   ),
@@ -1662,7 +1672,7 @@ class _ScenePainter extends CustomPainter {
       final nz = e1x * e2y - e1y * e2x;
       final nl = math.sqrt(nx * nx + ny * ny + nz * nz);
       if (nl < 1e-12) continue;
-      
+
       final lit = 0.4 + 0.6 * ((nx * lx + ny * ly + nz * lz) / nl).abs();
       final col = mesh.colors[t] == 0 ? baseArgb : mesh.colors[t];
       final rr = (((col >> 16) & 0xFF) * lit).round();
