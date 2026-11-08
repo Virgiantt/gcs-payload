@@ -1,6 +1,5 @@
 import '../models/telemetry.dart';
 
-/// Urutan fase misi sesuai state di telemetri.
 const List<String> kFlightPhases = [
   'LAUNCH_PAD',
   'ASCENT',
@@ -11,14 +10,12 @@ const List<String> kFlightPhases = [
 
 enum FlightEventKind { launch, apogee, separation, descent, landed }
 
-/// Label event di peta untuk awal tiap state. Ubah teksnya sesuai misi.
 const Map<String, (String, FlightEventKind)> kStateEvents = {
   'ASCENT': ('Launch', FlightEventKind.launch),
   'APOGEE': ('Separation', FlightEventKind.separation),
   'DESCENT': ('Descent', FlightEventKind.descent),
   'LANDED': ('Landed', FlightEventKind.landed),
 };
-
 class TrackPoint {
   const TrackPoint({
     required this.lat,
@@ -43,9 +40,6 @@ class FlightEvent {
   final FlightEventKind kind;
 }
 
-/// Menyimpan seluruh lintasan satu penerbangan, terpisah dari history
-/// telemetri yang panjangnya dibatasi. Direset otomatis saat state
-/// kembali ke LAUNCH_PAD setelah terbang.
 class FlightTrack {
   static const int maxPoints = 20000;
 
@@ -53,8 +47,6 @@ class FlightTrack {
   final Map<String, String> phaseTimes = {};
   double? maxAlt;
 
-  /// Naik setiap ada perubahan, dipakai widget untuk tahu kapan
-  /// harus menghitung ulang.
   int version = 0;
 
   int _lastPacket = -1;

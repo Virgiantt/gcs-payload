@@ -303,7 +303,6 @@ class _GcsHomeState extends State<GcsHome> {
             Column(
               children: [
                 _buildHeader(),
-                AlertBar(palette: palette, service: alerts),
                 // Flight state dibuat tetap (tidak ikut scroll) dan tampil
                 // di semua halaman.
                 Padding(

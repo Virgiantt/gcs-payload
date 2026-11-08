@@ -1,7 +1,5 @@
 import 'dart:typed_data';
 
-/// Protokol EEPISAT LoRa. Mengikuti protocol.h.
-///
 /// Frame: [0xAA][TYPE][SEQ][LEN][PAYLOAD x LEN][CRC16_H][CRC16_L]
 /// CRC16-CCITT (poly 0x1021, init 0xFFFF) atas TYPE, SEQ, LEN, PAYLOAD.
 class LoraProtocol {
@@ -46,7 +44,6 @@ class LoraProtocol {
     return out;
   }
 
-  /// ACK untuk PKT_START: payload "OK", seq sama dengan START.
   static Uint8List startAck(int seq) => build(pktStartAck, seq, startOk);
 
   /// ACK untuk PKT_GPS: payload [status][rxCount_L][rxCount_H].
@@ -54,7 +51,6 @@ class LoraProtocol {
       build(pktGpsAck, seq, [status, rxCount & 0xFF, (rxCount >> 8) & 0xFF]);
 }
 
-/// Payload PKT_GPS (16 byte, little-endian, packed).
 class GpsPayload {
   final double lat;
   final double lon;
@@ -80,14 +76,12 @@ class GpsPayload {
   }
 }
 
-/// Parser frame byte demi byte. [feed] true kalau satu frame valid selesai.
 class FrameParser {
   int type = 0;
   int seq = 0;
   int len = 0;
   final Uint8List payload = Uint8List(LoraProtocol.maxPayload);
 
-  /// Jumlah frame lengkap yang CRC-nya salah.
   int crcErrors = 0;
 
   int _state = 0;

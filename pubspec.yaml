@@ -1,5 +1,5 @@
 name: gcs_cansat
-description: CanSat Ground Control Station — Flutter Desktop
+description: Ground Control Station — Flutter Desktop
 publish_to: "none"
 version: 1.0.0+1
 
