@@ -4,19 +4,21 @@ import 'dart:io' show Platform, exit;
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutterpi_gstreamer_video_player/flutterpi_gstreamer_video_player.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'models/telemetry.dart';
 import 'services/alert_service.dart';
+import 'services/camera_service.dart';
 import 'services/command_service.dart';
 import 'services/flight_track.dart';
 import 'services/system_monitor.dart';
 import 'services/telemetry_logger.dart';
 import 'services/telemetry_service.dart';
 import 'theme/app_theme.dart';
-import 'widgets/alert_bar.dart';
 import 'widgets/battery_panel.dart';
+import 'widgets/camera_panel.dart';
 import 'widgets/command_panel.dart';
 import 'widgets/connection_indicator.dart';
 import 'widgets/flight_progress_bar.dart';
@@ -24,6 +26,7 @@ import 'widgets/gps_panel.dart';
 import 'widgets/live_chart.dart';
 import 'widgets/map_3d_view.dart';
 import 'widgets/telemetry_log_table.dart';
+import 'widgets/alert_status_pill.dart';
 
 /// Modul LoRa E220 di Raspberry Pi: port serial dan pin kontrol (nomor BCM).
 const String kSerialPort = '/dev/serial0';
@@ -47,6 +50,14 @@ const double kCommandPanelMax = 560;
 
 const String kLogoAsset = 'assets/icons/eepisat.png';
 
+// 🔥 CAMERA: Konfigurasi kamera (Windows)
+const String kCameraDevice = '/dev/video0';
+const String kCameraFormat = 'mjpeg';
+const String kCameraResolution = '640x480';
+const int kCameraFps = 30;
+const int kCameraUdpPort = 5000;
+const String kCameraStreamUrl = 'udp://127.0.0.1:$kCameraUdpPort';
+
 // =========================================================
 // DETEKSI PLATFORM
 // =========================================================
@@ -69,6 +80,8 @@ ThemeData _buildTheme(AppPalette p) {
 // =========================================================
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Ganti MediaKit.ensureInitialized() dengan plugin video flutter-pi
+  FlutterpiVideoPlayer.registerWith();
 
   FlutterError.onError = (details) {
     debugPrint('[FLUTTER-ERR] ${details.exceptionAsString()}');
@@ -149,6 +162,9 @@ class _GcsHomeState extends State<GcsHome> {
   int _lastTotal = -1;
   DateTime? _lastPacketAt;
 
+  // 🔥 CAMERA: service untuk spawn ffmpeg (v4l2 -> udp)
+  final CameraService camera = CameraService();
+
   // Lintasan penuh satu penerbangan, waktu fase, dan apogee.
   final FlightTrack track = FlightTrack();
 
@@ -188,6 +204,10 @@ class _GcsHomeState extends State<GcsHome> {
     // Command link nonaktif (TCP tidak bisa lewat serial).
     // cmd.start();
     // _cmdStarted = true;
+
+    camera.start(
+      device: kCameraDevice,
+    );
   }
 
   void _onLoraLog(String m) {
@@ -260,6 +280,7 @@ class _GcsHomeState extends State<GcsHome> {
     service.dispose();
     sysmon.dispose();
     cmd.dispose();
+    camera.dispose(); // 🔥 CAMERA: matikan ffmpeg
     super.dispose();
   }
 
@@ -443,6 +464,7 @@ class _GcsHomeState extends State<GcsHome> {
     (Icons.dashboard_outlined, 'Dashboard'),
     (Icons.public, 'Map 3D'),
     (Icons.battery_charging_full, 'Battery'),
+    (Icons.videocam_outlined, 'Camera'), // 🔥 CAMERA: tab baru
   ];
 
   Widget _navTabs({bool iconOnly = false}) {
@@ -668,6 +690,7 @@ class _GcsHomeState extends State<GcsHome> {
 
   Future<void> _quitApp() async {
     _alertTimer?.cancel();
+    camera.dispose(); // 🔥 CAMERA: pastikan ffmpeg mati
 
     if (_isDesktopWindowManager) {
       // Windows / macOS desktop
@@ -692,6 +715,7 @@ class _GcsHomeState extends State<GcsHome> {
           history: service.history,
           signalLost: _signalLost,
         ),
+      3 => _buildCameraTab(), // 🔥 CAMERA: tab baru
       _ => _buildDashboardTab(),
     };
 
@@ -732,13 +756,29 @@ class _GcsHomeState extends State<GcsHome> {
               return Row(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
+                  // 🔥 CAMERA: kiri = peta (atas) + camera (bawah)
                   Expanded(
-                    child: Map3DView(
-                      key: const ValueKey('map3d-dash'),
-                      palette: palette,
-                      data: service.latest,
-                      track: track,
-                      compact: true,
+                    child: Column(
+                      children: [
+                        Expanded(
+                          flex: 3,
+                          child: Map3DView(
+                            key: const ValueKey('map3d-dash'),
+                            palette: palette,
+                            data: service.latest,
+                            track: track,
+                            compact: true,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Expanded(
+                          flex: 2,
+                          child: CameraPanel(
+                            palette: palette,
+                            streamUrl: 'udp://127.0.0.1:5000',
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -895,6 +935,148 @@ class _GcsHomeState extends State<GcsHome> {
                 _section('LoRa LOG'),
                 Expanded(flex: 2, child: _buildRxLog()),
               ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // =========================================================
+  // TAB 4: CAMERA (full-screen camera + info) 🔥 CAMERA
+  // =========================================================
+  Widget _buildCameraTab() {
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Row(
+        children: [
+          Expanded(
+            flex: 3,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _section('LIVE CAMERA FEED'),
+                Expanded(
+                  child: CameraPanel(
+                    palette: palette,
+                    streamUrl: kCameraStreamUrl,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            flex: 1,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _section('CAMERA INFO'),
+                Expanded(child: _buildCameraInfo()),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCameraInfo() {
+    final p = palette;
+    final running = camera.isRunning;
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: p.panel,
+        border: Border.all(color: p.border),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _infoRow('Device', kCameraDevice, p),
+          _infoRow('Format', kCameraFormat, p),
+          _infoRow('Resolution', kCameraResolution, p),
+          _infoRow('FPS', '$kCameraFps', p),
+          _infoRow('Stream', kCameraStreamUrl, p),
+          const Divider(height: 24),
+          Row(
+            children: [
+              Icon(
+                running ? Icons.play_circle : Icons.stop_circle,
+                color: running ? p.ok : p.bad,
+                size: 18,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                running ? 'FFmpeg running' : 'FFmpeg stopped',
+                style: TextStyle(
+                  color: running ? p.ok : p.bad,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 12,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: _headerButton(
+                  icon: Icons.play_arrow,
+                  label: 'Start',
+                  onTap: () async {
+                    await camera.start(
+                      device: kCameraDevice,
+                    );
+                    if (mounted) setState(() {});
+                  },
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _headerButton(
+                  icon: Icons.stop,
+                  label: 'Stop',
+                  onTap: () async {
+                    await camera.stop();
+                    if (mounted) setState(() {});
+                  },
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _infoRow(String label, String value, AppPalette p) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 80,
+            child: Text(
+              label,
+              style: TextStyle(
+                color: p.textDim,
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 1.0,
+              ),
+            ),
+          ),
+          Expanded(
+            child: SelectableText(
+              value,
+              style: TextStyle(
+                color: p.text,
+                fontSize: 11,
+                fontFamily: 'monospace',
+              ),
             ),
           ),
         ],
@@ -1126,6 +1308,21 @@ class _GcsHomeState extends State<GcsHome> {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(color: palette.textDim, fontSize: 11),
+            ),
+          ),
+          // 🔥 CAMERA: indikator kamera di status bar
+          Icon(
+            Icons.videocam,
+            size: 13,
+            color: camera.isRunning ? palette.ok : palette.textDim,
+          ),
+          const SizedBox(width: 4),
+          Text(
+            camera.isRunning ? 'CAM ON' : 'CAM OFF',
+            style: TextStyle(
+              color: camera.isRunning ? palette.ok : palette.textDim,
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
             ),
           ),
           const SizedBox(width: 12),

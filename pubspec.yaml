@@ -1,4 +1,4 @@
-name: gcs_cansat
+name: gcs
 description: Ground Control Station — Flutter Desktop
 publish_to: "none"
 version: 1.0.0+1
@@ -14,6 +14,12 @@ dependencies:
   google_fonts: ^6.2.1
   ffi: ^2.2.0
   dart_periphery: ^0.9.0
+
+  camera: ^0.10.5
+  camera_windows: ^0.2.0
+
+  video_player: ^2.10.0
+  flutterpi_gstreamer_video_player: ^0.2.0
 
 dev_dependencies:
   flutter_test:
@@ -34,5 +40,4 @@ flutter:
   uses-material-design: true
   assets:
     - assets/icons/
-    - assets/models/
     - assets/models/
